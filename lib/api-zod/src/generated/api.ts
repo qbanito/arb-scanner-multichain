@@ -159,6 +159,44 @@ export const GetScannerAcrossProfitResponse = zod.object({
 
 
 /**
+ * @summary Continuously scan cross-chain price dislocations through Across
+ */
+export const GetScannerAcrossOpportunitiesResponse = zod.object({
+  "generatedAt": zod.string(),
+  "nextScanAt": zod.string(),
+  "enabled": zod.boolean(),
+  "continuous": zod.boolean(),
+  "chainsScanned": zod.array(zod.string()),
+  "tokensEvaluated": zod.number(),
+  "quoteFailures": zod.number(),
+  "configurationMissing": zod.array(zod.string()),
+  "opportunities": zod.array(zod.object({
+  "id": zod.string(),
+  "token": zod.string(),
+  "originChain": zod.string(),
+  "originChainId": zod.number(),
+  "destinationChain": zod.string(),
+  "destinationChainId": zod.number(),
+  "originPriceUsd": zod.number(),
+  "destinationPriceUsd": zod.number(),
+  "spreadBps": zod.number(),
+  "inputAmount": zod.string(),
+  "inputAmountUsd": zod.number(),
+  "expectedOutputAmount": zod.string().optional(),
+  "expectedOutputUsd": zod.number().optional(),
+  "acrossFeeUsd": zod.number().optional(),
+  "expectedFillTimeSeconds": zod.number().optional(),
+  "netProfitUsd": zod.number().optional(),
+  "quoteStatus": zod.enum(['quoted', 'unavailable']),
+  "profitable": zod.boolean(),
+  "executable": zod.literal(false),
+  "blocker": zod.enum(['cross-chain-inventory-required', 'across-quote-unavailable']),
+  "detectedAt": zod.string()
+}))
+})
+
+
+/**
  * @summary Scan supported chains and DEX pools for price dislocations
  */
 export const getScannerOpportunitiesQueryChainDefault = `all`;

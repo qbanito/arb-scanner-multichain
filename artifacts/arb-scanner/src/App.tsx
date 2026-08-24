@@ -65,11 +65,13 @@ import {
   getGetScannerSummaryQueryKey,
   getGetScannerTokensQueryKey,
   getGetScannerAcrossStatusQueryKey,
+  getGetScannerAcrossOpportunitiesQueryKey,
   getGetLiquidationOpportunitiesQueryKey,
   getGetLiquidationStrategyDetailQueryKey,
   getHealthCheckQueryKey,
   useGetScannerNetworks,
   useGetScannerAcrossStatus,
+  useGetScannerAcrossOpportunities,
   useGetScannerOpportunity,
   useGetScannerOpportunities,
   useGetScannerSummary,
@@ -85,6 +87,7 @@ import type {
   ScannerToken,
   LiquidationOpportunity,
   AcrossStatus,
+  AcrossOpportunitySnapshot,
 } from "@workspace/api-client-react";
 import { QuickDeposit } from "@/components/QuickDeposit";
 import NotFound from "@/pages/not-found";
@@ -1090,11 +1093,13 @@ function NetworkStrip({
 
 function AcrossMission({
   data,
+  snapshot,
   loading,
   error,
   retry,
 }: {
   data?: AcrossStatus;
+  snapshot?: AcrossOpportunitySnapshot;
   loading: boolean;
   error: boolean;
   retry: () => void;
@@ -1138,6 +1143,42 @@ function AcrossMission({
             </div>
           </div>
         )}
+        {snapshot?.configurationMissing.length ? (
+          <div className="mt-3 rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 font-mono-tight text-[10px] text-warning">
+            Continuous cross-chain scan waiting for: {snapshot.configurationMissing.join(", ")}
+          </div>
+        ) : null}
+        {snapshot?.opportunities.length ? (
+          <div className="mt-3 overflow-x-auto rounded-2xl border border-border bg-card/40">
+            <table className="w-full min-w-[760px] text-left font-mono-tight text-[10px]">
+              <thead className="border-b border-border text-muted-foreground">
+                <tr>
+                  <th className="px-4 py-3 font-normal">Token / route</th>
+                  <th className="px-4 py-3 font-normal">Spread</th>
+                  <th className="px-4 py-3 font-normal">Net profit</th>
+                  <th className="px-4 py-3 font-normal">Fill</th>
+                  <th className="px-4 py-3 text-right font-normal">State</th>
+                </tr>
+              </thead>
+              <tbody>
+                {snapshot.opportunities.slice(0, 8).map((opportunity) => (
+                  <tr key={opportunity.id} className="border-b border-border/60 last:border-0">
+                    <td className="px-4 py-3">
+                      <b className="text-foreground">{opportunity.token}</b>
+                      <span className="ml-2 text-muted-foreground">{opportunity.originChain} → {opportunity.destinationChain}</span>
+                    </td>
+                    <td className="px-4 py-3 text-foreground">{(opportunity.spreadBps / 100).toFixed(2)}%</td>
+                    <td className={`px-4 py-3 ${opportunity.profitable ? "text-accent" : "text-warning"}`}>
+                      {opportunity.netProfitUsd === undefined ? "—" : money(opportunity.netProfitUsd)}
+                    </td>
+                    <td className="px-4 py-3 text-muted-foreground">{opportunity.expectedFillTimeSeconds ? `${opportunity.expectedFillTimeSeconds}s` : "—"}</td>
+                    <td className="px-4 py-3 text-right text-warning">watch-only</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
       </DataState>
     </section>
   );
@@ -2439,6 +2480,12 @@ function Cockpit() {
       refetchInterval: STATUS_REFRESH_MS,
     },
   });
+  const acrossOpportunities = useGetScannerAcrossOpportunities({
+    query: {
+      queryKey: getGetScannerAcrossOpportunitiesQueryKey(),
+      refetchInterval: OPPORTUNITY_REFRESH_MS,
+    },
+  });
   const tokens = useGetScannerTokens({
     query: {
       queryKey: getGetScannerTokensQueryKey(),
@@ -2471,6 +2518,7 @@ function Cockpit() {
     summary.isFetching ||
     networks.isFetching ||
     across.isFetching ||
+    acrossOpportunities.isFetching ||
     tokens.isFetching ||
     opportunities.isFetching ||
     liquidations.isFetching;
@@ -2478,6 +2526,7 @@ function Cockpit() {
     client.invalidateQueries({ queryKey: getGetScannerSummaryQueryKey() });
     client.invalidateQueries({ queryKey: getGetScannerNetworksQueryKey() });
     client.invalidateQueries({ queryKey: getGetScannerAcrossStatusQueryKey() });
+    client.invalidateQueries({ queryKey: getGetScannerAcrossOpportunitiesQueryKey() });
     client.invalidateQueries({ queryKey: getGetScannerTokensQueryKey() });
     client.invalidateQueries({
       queryKey: getGetScannerOpportunitiesQueryKey(),
@@ -2514,7 +2563,7 @@ function Cockpit() {
             error={networks.isError}
             retry={() => networks.refetch()}
           />
-          <AcrossMission data={across.data} loading={across.isLoading} error={across.isError} retry={() => across.refetch()} />
+          <AcrossMission data={across.data} snapshot={acrossOpportunities.data} loading={across.isLoading || acrossOpportunities.isLoading} error={across.isError || acrossOpportunities.isError} retry={() => { void across.refetch(); void acrossOpportunities.refetch(); }} />
           <Opportunities
             data={opportunities.data}
             loading={opportunities.isLoading}

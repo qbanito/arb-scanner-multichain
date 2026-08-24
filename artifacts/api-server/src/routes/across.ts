@@ -3,6 +3,7 @@ import {
   acrossConfig,
   calculateCrossChainProfit,
   fetchAcrossQuote,
+  scanAcrossOpportunities,
   type AcrossQuoteRequest,
 } from "../lib/across";
 import { RateGate } from "../lib/rateGate";
@@ -119,6 +120,15 @@ router.get("/scanner/across/profit", (req, res) => {
     slippageUsd: slippageUsd!,
     inventoryCarryUsd,
   }));
+});
+
+router.get("/scanner/across/opportunities", async (_req, res) => {
+  try {
+    const snapshot = await scanAcrossOpportunities();
+    res.json(snapshot);
+  } catch (err) {
+    res.status(503).json({ error: err instanceof Error ? err.message : "Across cross-chain scan unavailable" });
+  }
 });
 
 export default router;

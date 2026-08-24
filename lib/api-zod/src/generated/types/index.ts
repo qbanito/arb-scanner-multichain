@@ -8,6 +8,10 @@
 
 export * from './acrossFees';
 export * from './acrossFeesDetails';
+export * from './acrossOpportunity';
+export * from './acrossOpportunityBlocker';
+export * from './acrossOpportunityQuoteStatus';
+export * from './acrossOpportunitySnapshot';
 export * from './acrossProfit';
 export * from './acrossProfitBlocker';
 export * from './acrossQuote';

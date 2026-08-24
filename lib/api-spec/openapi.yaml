@@ -150,6 +150,20 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AcrossProfit"
+  /scanner/across/opportunities:
+    get:
+      operationId: getScannerAcrossOpportunities
+      tags: [scanner]
+      summary: Continuously scan cross-chain price dislocations through Across
+      responses:
+        "200":
+          description: Cross-chain opportunities with fresh Across quotes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AcrossOpportunitySnapshot"
+        "503":
+          description: Cross-chain scan unavailable
   /scanner/opportunities:
     get:
       operationId: getScannerOpportunities
@@ -616,6 +630,50 @@ components:
         executable: { type: boolean, enum: [false] }
         blocker: { type: string, enum: [cross-chain-inventory-required] }
       required: [grossSpreadUsd, totalCostsUsd, netProfitUsd, executable, blocker]
+    AcrossOpportunity:
+      type: object
+      properties:
+        id: { type: string }
+        token: { type: string }
+        originChain: { type: string }
+        originChainId: { type: number }
+        destinationChain: { type: string }
+        destinationChainId: { type: number }
+        originPriceUsd: { type: number }
+        destinationPriceUsd: { type: number }
+        spreadBps: { type: number }
+        inputAmount: { type: string }
+        inputAmountUsd: { type: number }
+        expectedOutputAmount: { type: string }
+        expectedOutputUsd: { type: number }
+        acrossFeeUsd: { type: number }
+        expectedFillTimeSeconds: { type: number }
+        netProfitUsd: { type: number }
+        quoteStatus: { type: string, enum: [quoted, unavailable] }
+        profitable: { type: boolean }
+        executable: { type: boolean, enum: [false] }
+        blocker: { type: string, enum: [cross-chain-inventory-required, across-quote-unavailable] }
+        detectedAt: { type: string }
+      required: [id, token, originChain, originChainId, destinationChain, destinationChainId, originPriceUsd, destinationPriceUsd, spreadBps, inputAmount, inputAmountUsd, quoteStatus, profitable, executable, blocker, detectedAt]
+    AcrossOpportunitySnapshot:
+      type: object
+      properties:
+        generatedAt: { type: string }
+        nextScanAt: { type: string }
+        enabled: { type: boolean }
+        continuous: { type: boolean }
+        chainsScanned:
+          type: array
+          items: { type: string }
+        tokensEvaluated: { type: number }
+        quoteFailures: { type: number }
+        configurationMissing:
+          type: array
+          items: { type: string }
+        opportunities:
+          type: array
+          items: { $ref: "#/components/schemas/AcrossOpportunity" }
+      required: [generatedAt, nextScanAt, enabled, continuous, chainsScanned, tokensEvaluated, quoteFailures, configurationMissing, opportunities]
     DEXVenue:
       type: object
       properties:

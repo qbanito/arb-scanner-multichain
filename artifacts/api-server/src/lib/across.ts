@@ -1,4 +1,15 @@
 import { logger } from "./logger";
+import { formatUnits, parseUnits } from "viem";
+import { normalizeTrackedPair } from "./arbitrageEligibility";
+import {
+  CHAIN_IDS,
+  liveMarkets,
+  RPCS,
+  TOKEN_DEFINITIONS,
+  tokenDecimals,
+  type ChainId,
+  type LiveMarket,
+} from "../routes/scanner";
 
 const DEFAULT_ACROSS_API_BASE_URL = "https://app.across.to/api";
 const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
@@ -66,6 +77,42 @@ export type CrossChainProfit = {
   netProfitUsd: number;
   executable: false;
   blocker: "cross-chain-inventory-required";
+};
+
+export type AcrossOpportunity = {
+  id: string;
+  token: string;
+  originChain: string;
+  originChainId: number;
+  destinationChain: string;
+  destinationChainId: number;
+  originPriceUsd: number;
+  destinationPriceUsd: number;
+  spreadBps: number;
+  inputAmount: string;
+  inputAmountUsd: number;
+  expectedOutputAmount?: string;
+  expectedOutputUsd?: number;
+  acrossFeeUsd?: number;
+  expectedFillTimeSeconds?: number;
+  netProfitUsd?: number;
+  quoteStatus: "quoted" | "unavailable";
+  profitable: boolean;
+  executable: false;
+  blocker: "cross-chain-inventory-required" | "across-quote-unavailable";
+  detectedAt: string;
+};
+
+export type AcrossOpportunitySnapshot = {
+  generatedAt: string;
+  nextScanAt: string;
+  enabled: boolean;
+  continuous: boolean;
+  chainsScanned: string[];
+  tokensEvaluated: number;
+  quoteFailures: number;
+  configurationMissing: string[];
+  opportunities: AcrossOpportunity[];
 };
 
 function positiveFinite(value: unknown): number | undefined {
@@ -227,4 +274,198 @@ export function calculateCrossChainProfit(inputs: CrossChainProfitInputs): Cross
     executable: false,
     blocker: "cross-chain-inventory-required",
   };
+}
+
+function envNumber(name: string, fallback: number, minimum = 0, maximum = Number.MAX_SAFE_INTEGER): number {
+  const parsed = Number(process.env[name]);
+  return Number.isFinite(parsed) ? Math.min(maximum, Math.max(minimum, parsed)) : fallback;
+}
+
+function addressConfigured(value: string | undefined): value is `0x${string}` {
+  return Boolean(value && ADDRESS_RE.test(value));
+}
+
+type MarketPrice = {
+  token: string;
+  address: string;
+  decimals: number;
+  priceUsd: number;
+  liquidityUsd: number;
+};
+
+function bestMarketPrices(chain: ChainId, markets: LiveMarket[]): Map<string, MarketPrice> {
+  const result = new Map<string, MarketPrice>();
+  for (const { token, pairs } of markets) {
+    const address = token.addresses[chain];
+    if (!address) continue;
+    for (const pair of pairs) {
+      const normalized = normalizeTrackedPair(pair, address);
+      const liquidityUsd = Number(pair.liquidity?.usd ?? 0);
+      if (!normalized || normalized.priceUsd <= 0 || liquidityUsd < envNumber("ACROSS_MIN_POOL_LIQUIDITY_USD", 25_000)) continue;
+      const key = token.symbol.toUpperCase();
+      const current = result.get(key);
+      if (!current || liquidityUsd > current.liquidityUsd) {
+        result.set(key, {
+          token: token.symbol,
+          address,
+          decimals: tokenDecimals(token, chain),
+          priceUsd: normalized.priceUsd,
+          liquidityUsd,
+        });
+      }
+    }
+  }
+  return result;
+}
+
+function scanChains(): ChainId[] {
+  const config = acrossConfig();
+  const allowed = config.allowedChainIds;
+  const chains = CHAIN_IDS.filter((chain) => allowed.length === 0 || allowed.includes(RPCS[chain].chainId));
+  return chains.slice(0, Math.floor(envNumber("ACROSS_MAX_CHAINS", 8, 2, CHAIN_IDS.length)));
+}
+
+function amountForPrice(amountUsd: number, priceUsd: number, decimals: number): bigint {
+  const units = amountUsd / priceUsd;
+  const precision = Math.min(decimals, 8);
+  return parseUnits(units.toFixed(precision), decimals);
+}
+
+let acrossSnapshot: { expiresAt: number; value: AcrossOpportunitySnapshot } | null = null;
+let acrossScanInFlight: Promise<AcrossOpportunitySnapshot> | null = null;
+
+export async function scanAcrossOpportunities(force = false): Promise<AcrossOpportunitySnapshot> {
+  const config = acrossConfig();
+  const intervalMs = Math.floor(envNumber("ACROSS_SCAN_INTERVAL_MS", 15_000, 5_000, 120_000));
+  if (!force && acrossSnapshot && acrossSnapshot.expiresAt > Date.now()) return acrossSnapshot.value;
+  if (acrossScanInFlight) return acrossScanInFlight;
+
+  const configurationMissing = [
+    ...(config.enabled ? [] : ["ACROSS_ENABLED"]),
+    ...(config.apiKeyConfigured || !config.apiBaseUrl.includes("app.across.to") ? [] : ["ACROSS_API_KEY"]),
+    ...(config.integratorIdConfigured ? [] : ["ACROSS_INTEGRATOR_ID"]),
+    ...(addressConfigured(process.env["ACROSS_QUOTE_ADDRESS"]) ? [] : ["ACROSS_QUOTE_ADDRESS"]),
+  ];
+  const chains = scanChains();
+  const startedAt = new Date().toISOString();
+  if (configurationMissing.length > 0) {
+    const value: AcrossOpportunitySnapshot = {
+      generatedAt: startedAt,
+      nextScanAt: new Date(Date.now() + intervalMs).toISOString(),
+      enabled: config.enabled,
+      continuous: false,
+      chainsScanned: [],
+      tokensEvaluated: 0,
+      quoteFailures: 0,
+      configurationMissing,
+      opportunities: [],
+    };
+    acrossSnapshot = { expiresAt: Date.now() + intervalMs, value };
+    return value;
+  }
+
+  acrossScanInFlight = (async () => {
+    const settled = await Promise.allSettled(chains.map(async (chain) => ({ chain, markets: await liveMarkets(chain) })));
+    const successful = settled.flatMap((item) => item.status === "fulfilled" ? [item.value] : []);
+    const prices = new Map<ChainId, Map<string, MarketPrice>>(
+      successful.map(({ chain, markets }) => [chain, bestMarketPrices(chain, markets)]),
+    );
+    const candidates: Array<{
+      token: string;
+      origin: ChainId;
+      destination: ChainId;
+      originPrice: MarketPrice;
+      destinationPrice: MarketPrice;
+      spreadBps: number;
+    }> = [];
+    for (const token of TOKEN_DEFINITIONS) {
+      for (const origin of successful.map(({ chain }) => chain)) {
+        for (const destination of successful.map(({ chain }) => chain)) {
+          if (origin === destination) continue;
+          const originPrice = prices.get(origin)?.get(token.symbol.toUpperCase());
+          const destinationPrice = prices.get(destination)?.get(token.symbol.toUpperCase());
+          if (!originPrice || !destinationPrice || !token.addresses[origin] || !token.addresses[destination]) continue;
+          const spreadBps = ((destinationPrice.priceUsd / originPrice.priceUsd) - 1) * 10_000;
+          if (spreadBps < envNumber("ACROSS_MIN_SPREAD_BPS", 30, 1, 10_000)) continue;
+          candidates.push({ token: token.symbol, origin, destination, originPrice, destinationPrice, spreadBps });
+        }
+      }
+    }
+    candidates.sort((a, b) => b.spreadBps - a.spreadBps);
+    const quoteAddress = process.env["ACROSS_QUOTE_ADDRESS"] as `0x${string}`;
+    const inputAmountUsd = envNumber("ACROSS_SCAN_AMOUNT_USD", 250, 1, 1_000_000);
+    const maxQuotes = Math.floor(envNumber("ACROSS_MAX_QUOTES", 16, 1, 64));
+    let quoteFailures = 0;
+    const opportunities: AcrossOpportunity[] = [];
+    for (const candidate of candidates.slice(0, maxQuotes)) {
+      const amount = amountForPrice(inputAmountUsd, candidate.originPrice.priceUsd, candidate.originPrice.decimals);
+      const id = `across:${candidate.token}:${candidate.origin}:${candidate.destination}`;
+      try {
+        const quote = await fetchAcrossQuote({
+          originChainId: RPCS[candidate.origin].chainId,
+          destinationChainId: RPCS[candidate.destination].chainId,
+          inputToken: candidate.originPrice.address as `0x${string}`,
+          outputToken: candidate.destinationPrice.address as `0x${string}`,
+          amount: amount.toString(),
+          depositor: quoteAddress,
+          recipient: quoteAddress,
+          tradeType: "exactInput",
+        });
+        const expectedOutputUsd = Number(formatUnits(BigInt(quote.expectedOutputAmount), candidate.destinationPrice.decimals)) * candidate.destinationPrice.priceUsd;
+        const acrossFeeUsd = quote.fees.totalUsd ?? Math.max(0, inputAmountUsd - expectedOutputUsd);
+        const profit = calculateCrossChainProfit({
+          originSaleUsd: inputAmountUsd,
+          destinationBuyUsd: expectedOutputUsd,
+          acrossFeeUsd,
+          originGasUsd: envNumber("ACROSS_ORIGIN_GAS_USD", 0.25, 0, 100),
+          destinationGasUsd: envNumber("ACROSS_DESTINATION_GAS_USD", 0.25, 0, 100),
+          slippageUsd: inputAmountUsd * envNumber("ACROSS_SLIPPAGE_BPS", 50, 0, 1_000) / 10_000,
+          inventoryCarryUsd: inputAmountUsd * envNumber("ACROSS_INVENTORY_CARRY_BPS", 10, 0, 1_000) / 10_000,
+        });
+        opportunities.push({
+          id,
+          token: candidate.token,
+          originChain: candidate.origin,
+          originChainId: RPCS[candidate.origin].chainId,
+          destinationChain: candidate.destination,
+          destinationChainId: RPCS[candidate.destination].chainId,
+          originPriceUsd: candidate.originPrice.priceUsd,
+          destinationPriceUsd: candidate.destinationPrice.priceUsd,
+          spreadBps: Math.round(candidate.spreadBps),
+          inputAmount: amount.toString(),
+          inputAmountUsd,
+          expectedOutputAmount: quote.expectedOutputAmount,
+          expectedOutputUsd,
+          acrossFeeUsd,
+          expectedFillTimeSeconds: quote.expectedFillTimeSeconds,
+          netProfitUsd: profit.netProfitUsd,
+          quoteStatus: "quoted",
+          profitable: profit.netProfitUsd > 0,
+          executable: false,
+          blocker: "cross-chain-inventory-required",
+          detectedAt: startedAt,
+        });
+      } catch (err) {
+        quoteFailures++;
+        logger.debug({ err, id }, "Across cross-chain quote failed");
+      }
+    }
+    opportunities.sort((a, b) => (b.netProfitUsd ?? -Infinity) - (a.netProfitUsd ?? -Infinity));
+    const value: AcrossOpportunitySnapshot = {
+      generatedAt: startedAt,
+      nextScanAt: new Date(Date.now() + intervalMs).toISOString(),
+      enabled: true,
+      continuous: true,
+      chainsScanned: successful.map(({ chain }) => chain),
+      tokensEvaluated: TOKEN_DEFINITIONS.filter((token) => successful.filter(({ chain }) => token.addresses[chain]).length >= 2).length,
+      quoteFailures,
+      configurationMissing: [],
+      opportunities,
+    };
+    acrossSnapshot = { expiresAt: Date.now() + intervalMs, value };
+    return value;
+  })().finally(() => {
+    acrossScanInFlight = null;
+  });
+  return acrossScanInFlight;
 }

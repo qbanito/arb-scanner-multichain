@@ -58,7 +58,7 @@ import {
   zkSync,
 } from "viem/chains";
 
-const CHAIN_IDS = [
+export const CHAIN_IDS = [
   "ethereum",
   "arbitrum",
   "optimism",
@@ -74,8 +74,8 @@ const CHAIN_IDS = [
   "zksync",
   "soneium",
 ] as const;
-type ChainId = (typeof CHAIN_IDS)[number];
-type TokenDefinition = {
+export type ChainId = (typeof CHAIN_IDS)[number];
+export type TokenDefinition = {
   symbol: string;
   name: string;
   decimals: number;
@@ -186,7 +186,7 @@ function compareOpportunities(a: Opportunity, b: Opportunity): number {
   );
 }
 
-const TOKEN_DEFINITIONS: TokenDefinition[] = [
+export const TOKEN_DEFINITIONS: TokenDefinition[] = [
   [
     "WETH",
     "Wrapped Ether",
@@ -715,7 +715,7 @@ const TOKEN_DECIMAL_OVERRIDES: Partial<
   bsc: { USDC: 18, USDT: 18 },
 };
 
-function tokenDecimals(token: TokenDefinition, chain: ChainId): number {
+export function tokenDecimals(token: TokenDefinition, chain: ChainId): number {
   return TOKEN_DECIMAL_OVERRIDES[chain]?.[token.symbol] ?? token.decimals;
 }
 
@@ -726,7 +726,7 @@ function tokenDecimals(token: TokenDefinition, chain: ChainId): number {
 // Defaults to a well-known public node (verified reachable) when no
 // explicit fallback is configured, same convention as executor-bot's
 // ETHEREUM_RPC_URL_FALLBACK.
-const RPCS: Record<
+export const RPCS: Record<
   ChainId,
   {
     chainId: number;
@@ -1436,7 +1436,7 @@ async function networkStatus(chain: ChainId) {
   );
 }
 
-type DexPair = {
+export type DexPair = {
   dexId?: string;
   url?: string;
   pairAddress?: string;
@@ -1450,7 +1450,7 @@ type DexPair = {
   labels?: string[];
 };
 
-type LiveMarket = { token: TokenDefinition; pairs: DexPair[] };
+export type LiveMarket = { token: TokenDefinition; pairs: DexPair[] };
 
 // Keep the last real pool catalog across API restarts. A cold scan may need
 // more than a minute when a public indexer rate-limits fourteen networks; the
@@ -1831,7 +1831,7 @@ async function pairsFor(chain: ChainId, address: string): Promise<DexPair[]> {
   return Array.isArray(raw) ? (raw as DexPair[]) : [];
 }
 
-async function liveMarkets(chain: ChainId): Promise<LiveMarket[]> {
+export async function liveMarkets(chain: ChainId): Promise<LiveMarket[]> {
   await hydratePersistentMarkets(chain);
   const cacheKey = `markets:${chain}`;
   const previousCatalog = cache.get(cacheKey)?.value;

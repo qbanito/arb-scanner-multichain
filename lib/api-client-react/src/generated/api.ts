@@ -16,6 +16,7 @@ import type {
 } from '@tanstack/react-query';
 
 import type {
+  AcrossOpportunitySnapshot,
   AcrossProfit,
   AcrossQuote,
   AcrossStatus,
@@ -604,6 +605,83 @@ export function useGetScannerAcrossProfit<TData = Awaited<ReturnType<typeof getS
  ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
 
   const queryOptions = getGetScannerAcrossProfitQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getGetScannerAcrossOpportunitiesUrl = () => {
+
+
+
+
+  return `/api/scanner/across/opportunities`
+}
+
+/**
+ * @summary Continuously scan cross-chain price dislocations through Across
+ */
+export const getScannerAcrossOpportunities = async ( options?: Parameters<typeof customFetch>[1]): Promise<AcrossOpportunitySnapshot> => {
+
+  return customFetch<AcrossOpportunitySnapshot>(getGetScannerAcrossOpportunitiesUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetScannerAcrossOpportunitiesQueryKey = () => {
+    return [
+    `/api/scanner/across/opportunities`
+    ] as const;
+    }
+
+
+export const getGetScannerAcrossOpportunitiesQueryOptions = <TData = Awaited<ReturnType<typeof getScannerAcrossOpportunities>>, TError = ErrorType<void>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getScannerAcrossOpportunities>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetScannerAcrossOpportunitiesQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getScannerAcrossOpportunities>>> = ({ signal }) => getScannerAcrossOpportunities({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getScannerAcrossOpportunities>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetScannerAcrossOpportunitiesQueryResult = NonNullable<Awaited<ReturnType<typeof getScannerAcrossOpportunities>>>
+export type GetScannerAcrossOpportunitiesQueryError = ErrorType<void>
+
+
+/**
+ * @summary Continuously scan cross-chain price dislocations through Across
+ */
+
+export function useGetScannerAcrossOpportunities<TData = Awaited<ReturnType<typeof getScannerAcrossOpportunities>>, TError = ErrorType<void>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getScannerAcrossOpportunities>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetScannerAcrossOpportunitiesQueryOptions(options)
 
   const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
 

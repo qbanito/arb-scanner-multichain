@@ -181,6 +181,58 @@ export interface AcrossProfit {
   blocker: AcrossProfitBlocker;
 }
 
+export type AcrossOpportunityQuoteStatus = typeof AcrossOpportunityQuoteStatus[keyof typeof AcrossOpportunityQuoteStatus];
+
+
+export const AcrossOpportunityQuoteStatus = {
+  quoted: 'quoted',
+  unavailable: 'unavailable',
+} as const;
+
+export type AcrossOpportunityBlocker = typeof AcrossOpportunityBlocker[keyof typeof AcrossOpportunityBlocker];
+
+
+export const AcrossOpportunityBlocker = {
+  'cross-chain-inventory-required': 'cross-chain-inventory-required',
+  'across-quote-unavailable': 'across-quote-unavailable',
+} as const;
+
+export interface AcrossOpportunity {
+  id: string;
+  token: string;
+  originChain: string;
+  originChainId: number;
+  destinationChain: string;
+  destinationChainId: number;
+  originPriceUsd: number;
+  destinationPriceUsd: number;
+  spreadBps: number;
+  inputAmount: string;
+  inputAmountUsd: number;
+  expectedOutputAmount?: string;
+  expectedOutputUsd?: number;
+  acrossFeeUsd?: number;
+  expectedFillTimeSeconds?: number;
+  netProfitUsd?: number;
+  quoteStatus: AcrossOpportunityQuoteStatus;
+  profitable: boolean;
+  executable: false;
+  blocker: AcrossOpportunityBlocker;
+  detectedAt: string;
+}
+
+export interface AcrossOpportunitySnapshot {
+  generatedAt: string;
+  nextScanAt: string;
+  enabled: boolean;
+  continuous: boolean;
+  chainsScanned: string[];
+  tokensEvaluated: number;
+  quoteFailures: number;
+  configurationMissing: string[];
+  opportunities: AcrossOpportunity[];
+}
+
 export interface DEXVenue {
   name: string;
   /** Raw DexScreener venue identifier (e.g. "uniswap", "pancakeswap", "velodrome", "aerodrome"), used to resolve a protocol-specific on-chain adapter for execution. */

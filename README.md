@@ -174,6 +174,7 @@ The API exposes a quote-only Across layer:
 - `GET /api/scanner/across/status` reports whether the integration is configured.
 - `GET /api/scanner/across/quote` requests an Across Swap API quote and returns the approval/calldata payload without signing or submitting it.
 - `GET /api/scanner/across/profit` calculates gross spread, bridge fee, origin/destination gas, slippage and inventory carry.
+- `GET /api/scanner/across/opportunities` compares the best observed token prices across configured chains, refreshes Across quotes for the top dislocations and ranks net profit.
 
 Configure `ACROSS_ENABLED=true`, `ACROSS_API_KEY` and `ACROSS_INTEGRATOR_ID` in the API server. Production Across requests require both credentials. The returned route remains `executable: false` with `cross-chain-inventory-required`: an Across fill is fast, but it is not an atomic continuation of an origin-chain flash loan. Live execution requires destination inventory, fill reconciliation and a separately audited settlement policy.
 
