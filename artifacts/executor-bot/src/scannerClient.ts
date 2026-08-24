@@ -10,6 +10,7 @@ export async function fetchOpportunities(
   apiBaseUrl: string,
   chain: string,
   minProfitBps: number,
+  timeoutMs = 60_000,
 ): Promise<ArbitrageOpportunity[]> {
   const url = new URL("/api/scanner/opportunities", apiBaseUrl);
   url.searchParams.set("chain", chain);
@@ -17,7 +18,9 @@ export async function fetchOpportunities(
   url.searchParams.set("limit", "100");
 
   try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+    const response = await fetch(url, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
     if (!response.ok) {
       logger.warn({ status: response.status, chain }, "scanner API returned a non-OK status");
       return [];

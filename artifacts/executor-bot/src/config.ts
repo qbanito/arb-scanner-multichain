@@ -138,6 +138,14 @@ const envSchema = z.object({
   MIN_PROFIT_OVER_GAS_MULTIPLIER: z.coerce.number().positive().default(2),
   MAX_TRADES_PER_HOUR: z.coerce.number().int().positive().default(3),
   POLL_INTERVAL_MS: z.coerce.number().int().positive().default(15_000),
+  // Exact multi-pool scans can exceed 15 seconds on public RPCs. Aborting
+  // sooner makes the executor permanently miss otherwise valid snapshots.
+  SCANNER_REQUEST_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(5_000)
+    .max(120_000)
+    .default(60_000),
   MIN_TICK_GAP_MS: z.coerce.number().int().min(250).default(1_000),
   SLIPPAGE_BPS: z.coerce.number().int().nonnegative().default(50),
   // Profit is swept after every confirmed trade so an old balance can never
@@ -394,6 +402,7 @@ export function loadConfig() {
     minProfitOverGasMultiplier: env.MIN_PROFIT_OVER_GAS_MULTIPLIER,
     maxTradesPerHour: env.MAX_TRADES_PER_HOUR,
     pollIntervalMs: env.POLL_INTERVAL_MS,
+    scannerRequestTimeoutMs: env.SCANNER_REQUEST_TIMEOUT_MS,
     minTickGapMs: env.MIN_TICK_GAP_MS,
     slippageBps: env.SLIPPAGE_BPS,
     autoGasReserve: env.AUTO_GAS_RESERVE,
