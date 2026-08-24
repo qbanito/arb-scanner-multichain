@@ -96,6 +96,63 @@ const queryClient = new QueryClient();
 const OPPORTUNITY_REFRESH_MS = 5_000;
 const STATUS_REFRESH_MS = 15_000;
 const SLOW_DATA_REFRESH_MS = 60_000;
+const SCANNER_NETWORK_CONTROLS_URL = "/api/scanner/config/networks";
+
+type ScannerNetworkControls = {
+  enabledChains: GetScannerOpportunitiesChain[];
+  updatedAt: string;
+};
+
+function useScannerNetworkControls() {
+  const [data, setData] = useState<ScannerNetworkControls>();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    let current = true;
+    fetch(SCANNER_NETWORK_CONTROLS_URL)
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Network controls unavailable");
+        return (await response.json()) as ScannerNetworkControls;
+      })
+      .then((controls) => {
+        if (current) {
+          setData(controls);
+          setError(false);
+        }
+      })
+      .catch(() => current && setError(true))
+      .finally(() => current && setLoading(false));
+    return () => {
+      current = false;
+    };
+  }, []);
+
+  const setEnabledChains = async (
+    enabledChains: GetScannerOpportunitiesChain[],
+  ) => {
+    setSaving(true);
+    try {
+      const response = await fetch(SCANNER_NETWORK_CONTROLS_URL, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enabledChains }),
+      });
+      if (!response.ok) throw new Error("Could not save network controls");
+      setData((await response.json()) as ScannerNetworkControls);
+      setError(false);
+      return true;
+    } catch {
+      setError(true);
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return { data, loading, saving, error, setEnabledChains };
+}
 
 /* ============================== helpers ============================== */
 
@@ -1091,6 +1148,77 @@ function NetworkStrip({
   );
 }
 
+function NetworkControls({
+  controls,
+  loading,
+  saving,
+  error,
+  onChange,
+}: {
+  controls?: ScannerNetworkControls;
+  loading: boolean;
+  saving: boolean;
+  error: boolean;
+  onChange: (enabledChains: GetScannerOpportunitiesChain[]) => Promise<void>;
+}) {
+  const enabled = new Set(controls?.enabledChains ?? []);
+  const selectableNetworks = NETWORK_OPTIONS.filter(
+    (network) => network.value !== "all",
+  );
+  return (
+    <section className="mb-10 rounded-2xl border border-border bg-card/50 p-4 sm:p-5">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div className="font-mono-tight text-[9px] uppercase tracking-[0.14em] text-muted-foreground">
+            Scan controls
+          </div>
+          <h3 className="mt-1 text-sm font-medium">Active blockchains</h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Disabled networks are not queried for pools, RPC data, or exact quotes.
+          </p>
+        </div>
+        <span className="font-mono-tight text-[10px] text-primary">
+          {loading ? "Loading…" : `${enabled.size} active`}
+        </span>
+      </div>
+      <div className="mt-4 flex flex-wrap gap-2">
+        {selectableNetworks.map((network) => {
+          const active = enabled.has(network.value);
+          const lastActive = active && enabled.size === 1;
+          return (
+            <button
+              key={network.value}
+              type="button"
+              disabled={saving || loading || lastActive}
+              onClick={() => {
+                const next = active
+                  ? [...enabled].filter((chain) => chain !== network.value)
+                  : [...enabled, network.value];
+                void onChange(next);
+              }}
+              className={`rounded-lg border px-2.5 py-1.5 font-mono-tight text-[10px] transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
+                active
+                  ? "border-primary/45 bg-primary/12 text-primary"
+                  : "border-border bg-background text-muted-foreground hover:border-primary/35"
+              }`}
+              aria-pressed={active}
+              title={lastActive ? "Keep at least one blockchain active" : undefined}
+            >
+              <span className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full ${active ? "bg-primary" : "bg-muted-foreground/50"}`} />
+              {network.label}
+            </button>
+          );
+        })}
+      </div>
+      {error ? (
+        <p className="mt-3 font-mono-tight text-[10px] text-warning">
+          Could not save the scanner network controls. Try again.
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
 function AcrossMission({
   data,
   snapshot,
@@ -1321,6 +1449,7 @@ function Opportunities({
   onSelect,
   chain,
   onChainChange,
+  enabledChains,
 }: {
   data?: ArbitrageOpportunity[];
   loading: boolean;
@@ -1329,6 +1458,7 @@ function Opportunities({
   onSelect: (opportunity: ArbitrageOpportunity) => void;
   chain: GetScannerOpportunitiesChain;
   onChainChange: (chain: GetScannerOpportunitiesChain) => void;
+  enabledChains: GetScannerOpportunitiesChain[];
 }) {
   const [minBps, setMinBps] = useState("0");
   const filtered = useMemo(
@@ -1355,7 +1485,10 @@ function Opportunities({
               data-testid="select-chain-filter"
               className="cursor-pointer border-0 bg-transparent py-2 font-mono-tight text-[10px] text-muted-foreground outline-none"
             >
-              {NETWORK_OPTIONS.map((network) => (
+              {NETWORK_OPTIONS.filter(
+                (network) =>
+                  network.value === "all" || enabledChains.includes(network.value),
+              ).map((network) => (
                 <option key={network.value} value={network.value}>
                   {network.label}
                 </option>
@@ -2474,6 +2607,7 @@ function Cockpit() {
   const [selected, setSelected] = useState<ArbitrageOpportunity | null>(null);
   const [selectedLiquidation, setSelectedLiquidation] =
     useState<LiquidationOpportunity | null>(null);
+  const networkControls = useScannerNetworkControls();
   const summary = useGetScannerSummary({
     query: {
       queryKey: getGetScannerSummaryQueryKey(),
@@ -2505,6 +2639,11 @@ function Cockpit() {
     },
   });
   const [chain, setChain] = useState<GetScannerOpportunitiesChain>("all");
+  const enabledChains = networkControls.data?.enabledChains ?? [];
+  useEffect(() => {
+    if (chain !== "all" && enabledChains.length && !enabledChains.includes(chain))
+      setChain("all");
+  }, [chain, enabledChains]);
   const opportunityParams = { chain, minProfitBps: 0, limit: 300 };
   const opportunities = useGetScannerOpportunities(opportunityParams, {
     query: {
@@ -2575,6 +2714,20 @@ function Cockpit() {
             error={networks.isError}
             retry={() => networks.refetch()}
           />
+          <NetworkControls
+            controls={networkControls.data}
+            loading={networkControls.loading}
+            saving={networkControls.saving}
+            error={networkControls.error}
+            onChange={async (nextEnabledChains) => {
+              if (await networkControls.setEnabledChains(nextEnabledChains)) {
+                void summary.refetch();
+                void networks.refetch();
+                void tokens.refetch();
+                void opportunities.refetch();
+              }
+            }}
+          />
           <AcrossMission data={across.data} snapshot={acrossOpportunities.data} loading={across.isLoading || acrossOpportunities.isLoading} error={across.isError || acrossOpportunities.isError} retry={() => { void across.refetch(); void acrossOpportunities.refetch(); }} />
           <Opportunities
             data={opportunities.data}
@@ -2584,6 +2737,7 @@ function Cockpit() {
             onSelect={setSelected}
             chain={chain}
             onChainChange={setChain}
+            enabledChains={enabledChains}
           />
           <Liquidations
             data={liquidations.data}

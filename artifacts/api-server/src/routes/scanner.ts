@@ -1562,6 +1562,76 @@ const persistentCatalogDirectory = process.env["SCANNER_CACHE_DIR"]
   ? path.resolve(process.env["SCANNER_CACHE_DIR"]!)
   : path.resolve(process.cwd(), ".cache", "scanner-market-catalog");
 
+type ScannerNetworkControls = {
+  enabledChains: ChainId[];
+  updatedAt: string;
+};
+
+const scannerControlsFile = process.env["SCANNER_CONTROLS_FILE"]
+  ? path.resolve(process.env["SCANNER_CONTROLS_FILE"]!)
+  : path.join(persistentCatalogDirectory, "network-controls.json");
+const configuredChains = (process.env["SCANNER_ENABLED_CHAINS"] ?? "")
+  .split(",")
+  .map((chain) => chain.trim())
+  .filter((chain): chain is ChainId => CHAIN_IDS.includes(chain as ChainId));
+let scannerNetworkControls: ScannerNetworkControls = {
+  enabledChains: configuredChains.length ? configuredChains : [...CHAIN_IDS],
+  updatedAt: new Date().toISOString(),
+};
+let scannerControlsLoaded = false;
+
+function normalizedEnabledChains(value: unknown): ChainId[] | null {
+  if (!Array.isArray(value)) return null;
+  const chains = [...new Set(value)].filter(
+    (chain): chain is ChainId =>
+      typeof chain === "string" && CHAIN_IDS.includes(chain as ChainId),
+  );
+  return chains.length > 0 ? chains : null;
+}
+
+async function hydrateScannerNetworkControls(): Promise<void> {
+  if (scannerControlsLoaded) return;
+  scannerControlsLoaded = true;
+  try {
+    const raw = await readFile(scannerControlsFile, "utf8");
+    const saved = JSON.parse(raw) as Partial<ScannerNetworkControls>;
+    const enabledChains = normalizedEnabledChains(saved.enabledChains);
+    if (enabledChains) {
+      scannerNetworkControls = {
+        enabledChains,
+        updatedAt:
+          typeof saved.updatedAt === "string"
+            ? saved.updatedAt
+            : new Date().toISOString(),
+      };
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT")
+      logger.warn({ err }, "scanner network controls unavailable");
+  }
+}
+
+async function persistScannerNetworkControls(): Promise<void> {
+  try {
+    await mkdir(path.dirname(scannerControlsFile), { recursive: true });
+    const temporary = `${scannerControlsFile}.${process.pid}.tmp`;
+    await writeFile(temporary, JSON.stringify(scannerNetworkControls), "utf8");
+    await rename(temporary, scannerControlsFile);
+  } catch (err) {
+    logger.warn({ err }, "scanner network controls could not be persisted");
+  }
+}
+
+async function activeScannerChains(requested: "all" | ChainId): Promise<ChainId[]> {
+  await hydrateScannerNetworkControls();
+  const enabled = new Set(scannerNetworkControls.enabledChains);
+  return requested === "all"
+    ? CHAIN_IDS.filter((chain) => enabled.has(chain))
+    : enabled.has(requested)
+      ? [requested]
+      : [];
+}
+
 function isLiveMarketCatalog(value: unknown): value is LiveMarket[] {
   return (
     Array.isArray(value) &&
@@ -2858,7 +2928,10 @@ function isHighPotentialBscMeme(candidate: Opportunity): boolean {
 }
 
 async function scan(chain: "all" | ChainId) {
-  const chains: ChainId[] = chain === "all" ? [...CHAIN_IDS] : [chain];
+  const chains = await activeScannerChains(chain);
+  // A disabled chain is intentionally not contacted. This lets the UI reduce
+  // RPC/indexer usage instead of merely hiding results after a full scan.
+  if (chains.length === 0) return [];
   const pendingScans = chains.map((item) =>
     cached(
       `scan:${item}`,
@@ -3332,10 +3405,35 @@ function error(res: Response, message: string) {
 
 const router: IRouter = Router();
 
+router.get("/scanner/config/networks", async (_req, res) => {
+  await hydrateScannerNetworkControls();
+  res.json(scannerNetworkControls);
+});
+
+router.put("/scanner/config/networks", async (req, res) => {
+  const enabledChains = normalizedEnabledChains(req.body?.enabledChains);
+  if (!enabledChains) {
+    res.status(400).json({
+      error: "Select at least one supported network to keep the scanner active",
+    });
+    return;
+  }
+  scannerNetworkControls = {
+    enabledChains,
+    updatedAt: new Date().toISOString(),
+  };
+  await persistScannerNetworkControls();
+  // Prevent an old all-network response cache from making disabled chains look
+  // active during the next dashboard refresh.
+  cache.delete("scan:all");
+  res.json(scannerNetworkControls);
+});
+
 router.get("/scanner/networks", async (_req, res) => {
   try {
+    const activeChains = await activeScannerChains("all");
     const networks = await Promise.all(
-      (Object.keys(RPCS) as ChainId[]).map(async (chain) => {
+      activeChains.map(async (chain) => {
         const [statusResult, marketsResult] = await Promise.allSettled([
           networkStatus(chain),
           liveMarkets(chain),
@@ -3391,8 +3489,9 @@ router.get("/scanner/networks", async (_req, res) => {
 
 router.get("/scanner/tokens", async (_req, res) => {
   try {
+    const activeChains = await activeScannerChains("all");
     const markets = await Promise.all(
-      (Object.keys(RPCS) as ChainId[]).map(async (chain) => ({
+      activeChains.map(async (chain) => ({
         chain,
         markets: await liveMarkets(chain),
       })),
