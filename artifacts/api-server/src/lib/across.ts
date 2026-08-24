@@ -348,21 +348,6 @@ export async function scanAcrossOpportunities(force = false): Promise<AcrossOppo
   ];
   const chains = scanChains();
   const startedAt = new Date().toISOString();
-  if (configurationMissing.length > 0) {
-    const value: AcrossOpportunitySnapshot = {
-      generatedAt: startedAt,
-      nextScanAt: new Date(Date.now() + intervalMs).toISOString(),
-      enabled: config.enabled,
-      continuous: false,
-      chainsScanned: [],
-      tokensEvaluated: 0,
-      quoteFailures: 0,
-      configurationMissing,
-      opportunities: [],
-    };
-    acrossSnapshot = { expiresAt: Date.now() + intervalMs, value };
-    return value;
-  }
 
   acrossScanInFlight = (async () => {
     const settled = await Promise.allSettled(chains.map(async (chain) => ({ chain, markets: await liveMarkets(chain) })));
@@ -392,9 +377,51 @@ export async function scanAcrossOpportunities(force = false): Promise<AcrossOppo
       }
     }
     candidates.sort((a, b) => b.spreadBps - a.spreadBps);
-    const quoteAddress = process.env["ACROSS_QUOTE_ADDRESS"] as `0x${string}`;
     const inputAmountUsd = envNumber("ACROSS_SCAN_AMOUNT_USD", 250, 1, 1_000_000);
     const maxQuotes = Math.floor(envNumber("ACROSS_MAX_QUOTES", 16, 1, 64));
+
+    // Keep market discovery useful before production Across credentials are
+    // present. These rows are deliberately watch-only: without an Across
+    // quote we cannot calculate bridge fees, destination gas, slippage, or a
+    // realizable net profit.
+    if (configurationMissing.length > 0) {
+      const opportunities: AcrossOpportunity[] = candidates.slice(0, maxQuotes).map((candidate) => {
+        const amount = amountForPrice(inputAmountUsd, candidate.originPrice.priceUsd, candidate.originPrice.decimals);
+        return {
+          id: `across:${candidate.token}:${candidate.origin}:${candidate.destination}`,
+          token: candidate.token,
+          originChain: candidate.origin,
+          originChainId: RPCS[candidate.origin].chainId,
+          destinationChain: candidate.destination,
+          destinationChainId: RPCS[candidate.destination].chainId,
+          originPriceUsd: candidate.originPrice.priceUsd,
+          destinationPriceUsd: candidate.destinationPrice.priceUsd,
+          spreadBps: Math.round(candidate.spreadBps),
+          inputAmount: amount.toString(),
+          inputAmountUsd,
+          quoteStatus: "unavailable",
+          profitable: false,
+          executable: false,
+          blocker: "across-quote-unavailable",
+          detectedAt: startedAt,
+        };
+      });
+      const value: AcrossOpportunitySnapshot = {
+        generatedAt: startedAt,
+        nextScanAt: new Date(Date.now() + intervalMs).toISOString(),
+        enabled: config.enabled,
+        continuous: successful.length > 0,
+        chainsScanned: successful.map(({ chain }) => chain),
+        tokensEvaluated: TOKEN_DEFINITIONS.filter((token) => successful.filter(({ chain }) => token.addresses[chain]).length >= 2).length,
+        quoteFailures: 0,
+        configurationMissing,
+        opportunities,
+      };
+      acrossSnapshot = { expiresAt: Date.now() + intervalMs, value };
+      return value;
+    }
+
+    const quoteAddress = process.env["ACROSS_QUOTE_ADDRESS"] as `0x${string}`;
     let quoteFailures = 0;
     const opportunities: AcrossOpportunity[] = [];
     for (const candidate of candidates.slice(0, maxQuotes)) {
