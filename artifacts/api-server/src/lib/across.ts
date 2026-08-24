@@ -153,7 +153,8 @@ function feeUsd(body: Record<string, unknown>): number | undefined {
   if (!fees || typeof fees !== "object") return undefined;
   const total = (fees as Record<string, unknown>).total;
   if (total && typeof total === "object") {
-    const usd = positiveFinite((total as Record<string, unknown>).usd);
+    const breakdown = total as Record<string, unknown>;
+    const usd = positiveFinite(breakdown.usd) ?? positiveFinite(breakdown.amountUsd);
     if (usd !== undefined) return usd;
   }
   return positiveFinite(total);

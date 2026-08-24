@@ -64,7 +64,7 @@ test("Across quote normalizes executable calldata without sending it", async () 
       expectedOutputAmount: "99800000",
       minOutputAmount: "99700000",
       expectedFillTime: 2,
-      fees: { total: { amount: "200000", usd: 0.2 } },
+      fees: { total: { amount: "200000", amountUsd: 0.2 } },
       simulationSuccess: true,
       approvalTxns: [],
       swapTx: { to: "0x3333333333333333333333333333333333333333", data: "0x1234", value: "0" },
