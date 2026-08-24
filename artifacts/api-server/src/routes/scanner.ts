@@ -2671,29 +2671,34 @@ async function bscPriorityV2Pools(
   );
 }
 
+function isClosedAtomicRoute(
+  routeLegs: NonNullable<Opportunity["routeLegs"]>,
+): boolean {
+  if (routeLegs.length < 2) return false;
+  if (
+    routeLegs[0]!.tokenInAddress.toLowerCase() !==
+    routeLegs.at(-1)!.tokenOutAddress.toLowerCase()
+  )
+    return false;
+  return routeLegs.every(
+    (leg, index) =>
+      index === 0 ||
+      routeLegs[index - 1]!.tokenOutAddress.toLowerCase() ===
+        leg.tokenInAddress.toLowerCase(),
+  );
+}
+
 function buildGraphOpportunities(
   chain: ChainId,
   pools: Array<CyclePool<Venue>>,
   blockNumber: number,
+  discoveredTokens: ReadonlyMap<
+    string,
+    { address: string; symbol: string; decimals: number }
+  >,
 ): Opportunity[] {
   const chainId = RPCS[chain].chainId;
-  const tokenByAddress = new Map(
-    TOKEN_DEFINITIONS.flatMap((token) => {
-      const address = token.addresses[chain];
-      return address
-        ? [
-            [
-              address.toLowerCase(),
-              {
-                address,
-                symbol: token.symbol,
-                decimals: tokenDecimals(token, chain),
-              },
-            ] as const,
-          ]
-        : [];
-    }),
-  );
+  const tokenByAddress = new Map(discoveredTokens);
   const borrowAssets = new Set(
     [...tokenByAddress.keys()].filter(
       (address) =>
@@ -2716,9 +2721,45 @@ function buildGraphOpportunities(
             : [];
         })
       : [];
+  // New hot-meme assets do not inherit permission to trade just because an
+  // indexer saw volume. They can, however, be tested as explicit *closed*
+  // route shapes. A missing leg simply yields no candidate—never a synthetic
+  // USDT -> USDT -> MEME display route.
+  const dynamicBscPriorityTemplates =
+    chain === "bsc"
+      ? [...activeBscHotMemeAddresses].flatMap((memeAddress) => {
+          const meme = tokenByAddress.get(memeAddress);
+          const usdt = [...tokenByAddress.values()].find(
+            (token) =>
+              token.symbol === "USDT" &&
+              isStableQuote(chainId, token.address),
+          );
+          const wbnb = tokenByAddress.get(BSC_WBNB);
+          if (!meme || !usdt || !wbnb) return [];
+          return [
+            {
+              id: `hot-${meme.address.toLowerCase()}-wbnb`,
+              tokenAddresses: [wbnb.address, meme.address, wbnb.address],
+            },
+            {
+              id: `hot-${meme.address.toLowerCase()}-usdt`,
+              tokenAddresses: [usdt.address, meme.address, usdt.address],
+            },
+            {
+              id: `hot-${meme.address.toLowerCase()}-usdt-wbnb`,
+              tokenAddresses: [
+                usdt.address,
+                meme.address,
+                wbnb.address,
+                usdt.address,
+              ],
+            },
+          ];
+        })
+      : [];
   const prioritizedCycles = findPrioritizedCycles(
     pools,
-    priorityTemplates,
+    [...priorityTemplates, ...dynamicBscPriorityTemplates],
     borrowAssets,
     {
       minEstimatedBps: 2,
@@ -2763,6 +2804,10 @@ function buildGraphOpportunities(
       ...routeLegs.map((leg) => leg.tokenInSymbol),
       routeLegs.at(-1)!.tokenOutSymbol,
     ];
+    // findAtomicCycles/findPrioritizedCycles already guarantee this. Keep an
+    // explicit boundary check here so a future route-source change cannot put
+    // an open path into the quote or execution pipeline.
+    if (!isClosedAtomicRoute(routeLegs)) return null;
     const spreadBps = Number(cycle.estimatedGrossBps.toFixed(2));
     return {
       id: `${chain}-${"templateId" in cycle ? `priority-${cycle.templateId}` : `${cycle.legs.length}hop`}-${cycle.legs.map((leg) => leg.poolAddress.toLowerCase().replace(/[^a-f0-9]/g, "")).join("-")}`,
@@ -2800,7 +2845,7 @@ function buildGraphOpportunities(
       quoteStatus: "estimated" as const,
       status: "new" as const,
     };
-  });
+  }).filter((opportunity) => opportunity !== null) as Opportunity[];
 }
 
 /**
@@ -2816,7 +2861,7 @@ function closeDirectOpportunities(
   pools: Array<CyclePool<Venue>>,
 ): Opportunity[] {
   const chainId = RPCS[chain].chainId;
-  return opportunities.flatMap((opportunity) => {
+  return opportunities.flatMap<Opportunity>((opportunity) => {
     const buyQuote = opportunity.buyVenue.quoteTokenAddress?.toLowerCase();
     const sellQuote = opportunity.sellVenue.quoteTokenAddress?.toLowerCase();
     if (!buyQuote || !sellQuote) return [];
@@ -2828,8 +2873,43 @@ function closeDirectOpportunities(
     if (!isStableQuote(chainId, buyQuote) || !isStableQuote(chainId, sellQuote))
       return [];
 
-    if (buyQuote === sellQuote)
-      return opportunity.executable ? [opportunity] : [];
+    if (buyQuote === sellQuote) {
+      const quoteDecimals = QUOTE_DECIMALS[buyQuote];
+      if (!opportunity.executable || quoteDecimals === undefined) return [];
+      const quoteSymbol =
+        opportunity.buyVenue.quoteTokenSymbol ??
+        opportunity.sellVenue.quoteTokenSymbol ??
+        "USDT";
+      const routeLegs: NonNullable<Opportunity["routeLegs"]> = [
+        {
+          tokenInAddress: buyQuote,
+          tokenInSymbol: quoteSymbol,
+          tokenInDecimals: quoteDecimals,
+          tokenOutAddress: opportunity.tokenAddress,
+          tokenOutSymbol: opportunity.token,
+          tokenOutDecimals: opportunity.tokenDecimals,
+          venue: opportunity.buyVenue,
+        },
+        {
+          tokenInAddress: opportunity.tokenAddress,
+          tokenInSymbol: opportunity.token,
+          tokenInDecimals: opportunity.tokenDecimals,
+          tokenOutAddress: sellQuote,
+          tokenOutSymbol: quoteSymbol,
+          tokenOutDecimals: quoteDecimals,
+          venue: opportunity.sellVenue,
+        },
+      ];
+      if (!isClosedAtomicRoute(routeLegs)) return [];
+      return [
+        {
+          ...opportunity,
+          pair: `${quoteSymbol} → ${opportunity.token} → ${quoteSymbol}`,
+          routeKind: "two-pool" as const,
+          routeLegs,
+        },
+      ];
+    }
 
     const closingPath = findBestConversionPath(pools, sellQuote, buyQuote, {
       maxHops: 4,
@@ -2880,7 +2960,7 @@ function closeDirectOpportunities(
         venue: leg.venue,
       })),
     ];
-    if (routeLegs.length > 6) return [];
+    if (routeLegs.length > 6 || !isClosedAtomicRoute(routeLegs)) return [];
 
     const closingReturn = closingPath.reduce(
       (value, leg) => value * leg.spotRate * (1 - leg.feeBps / 10_000),
@@ -3116,6 +3196,7 @@ async function scan(chain: "all" | ChainId) {
           item,
           refreshedPools.pools,
           status.blockNumber,
+          discoveredTokens,
         );
         const discoveredDirectOpportunities = buildOpportunities(
           item,
