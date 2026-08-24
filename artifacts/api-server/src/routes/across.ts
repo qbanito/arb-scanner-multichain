@@ -11,6 +11,15 @@ import { RateGate } from "../lib/rateGate";
 const router: IRouter = Router();
 const acrossQuoteGate = new RateGate(250);
 
+// Keep the cross-chain snapshot warm while the Render web process is alive.
+// The timer is unref'd so it never prevents a clean shutdown. A paid Render
+// worker is still required for guaranteed 24/7 scanning while the web service
+// is idle/suspended; the endpoint remains the source of truth for the cockpit.
+const acrossBackgroundTimer = setInterval(() => {
+  if (acrossConfig().enabled) void scanAcrossOpportunities(true);
+}, Math.max(5_000, Number(process.env["ACROSS_SCAN_INTERVAL_MS"] ?? 15_000)));
+acrossBackgroundTimer.unref?.();
+
 function queryString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
