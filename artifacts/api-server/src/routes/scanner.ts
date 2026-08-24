@@ -700,6 +700,30 @@ TOKEN_DEFINITIONS.push(
     addresses: { bsc: "0x4FA7C69a7B69f8bC48233024d546bC299d6b03bf" },
   },
   {
+    // Canonical address anchored to the liquid PancakeSwap V2 SKYAI/WBNB
+    // market. Decimal metadata was read on-chain before adding this seed.
+    symbol: "SKYAI",
+    name: "SKYAI",
+    decimals: 18,
+    addresses: { bsc: "0x92AA03137385F18539301349DcFC9eBC923FfB10" },
+  },
+  {
+    // Canonical address anchored to PancakeSwap V3 mubarak/WBNB; exact
+    // router quotes still decide whether a second pool makes a closed cycle.
+    symbol: "MUBARAK",
+    name: "mubarak",
+    decimals: 18,
+    addresses: { bsc: "0x5C85d6C6825ab4032337F11eE92A72DF936b46F6" },
+  },
+  {
+    // Canonical address anchored to PancakeSwap V3 牛来/USDT. Use an ASCII
+    // scanner symbol while retaining the on-chain address as the authority.
+    symbol: "NIULAI",
+    name: "牛来",
+    decimals: 18,
+    addresses: { bsc: "0xbeEA1D618e533A387d941f58A7D4c9B7bD377777" },
+  },
+  {
     symbol: "CELO",
     name: "Celo",
     decimals: 18,
@@ -1093,10 +1117,13 @@ const BSC_MEME_PRIORITY_ROUTE_SYMBOLS = [
   ["WBNB", "FLOKI", "WBNB"],
   ["WBNB", "SHIB", "WBNB"],
   ["WBNB", "DOGE", "WBNB"],
+  ["WBNB", "SKYAI", "WBNB"],
+  ["WBNB", "MUBARAK", "WBNB"],
   // QUQ is anchored to the high-volume Pancake V3 QUQ/USDT pool supplied by
   // the operator. USDT is retained here because it is the pool's actual quote
   // asset; a WBNB leg is not fabricated when no WBNB/QUQ pool is present.
   ["USDT", "QUQ", "USDT"],
+  ["USDT", "NIULAI", "USDT"],
 ] as const;
 
 const BSC_MEME_PRIORITY_SYMBOLS = new Set([
@@ -1105,6 +1132,9 @@ const BSC_MEME_PRIORITY_SYMBOLS = new Set([
   "SHIB",
   "DOGE",
   "QUQ",
+  "SKYAI",
+  "MUBARAK",
+  "NIULAI",
 ]);
 const BSC_MEME_MIN_POOL_LIQUIDITY_USD = 100_000;
 const BSC_MEME_MIN_ROUTE_VOLUME_24H_USD = 250_000;
