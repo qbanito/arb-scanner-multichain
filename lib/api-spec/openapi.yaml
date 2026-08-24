@@ -842,6 +842,12 @@ components:
           type: string
           enum: [estimated, quoted, unavailable]
           description: Whether profit is only graph-estimated, fully quoted on-chain, or could not be quoted by a verified adapter.
+        quoteFailureAdapter:
+          type: string
+          description: Adapter and route leg that prevented an exact quote.
+        quoteFailureReason:
+          type: string
+          description: Bounded diagnostic returned when the exact quote is unavailable.
         executionBlocker:
           type: string
           enum:

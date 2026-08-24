@@ -42,6 +42,10 @@ export interface ArbitrageOpportunity {
   executorDeployed?: boolean;
   /** Whether profit is only graph-estimated, fully quoted on-chain, or could not be quoted by a verified adapter. */
   quoteStatus?: ArbitrageOpportunityQuoteStatus;
+  /** Adapter and route leg that prevented an exact quote. */
+  quoteFailureAdapter?: string;
+  /** Bounded diagnostic returned when the exact quote is unavailable. */
+  quoteFailureReason?: string;
   /** Concrete reason the route cannot currently be submitted. Omitted when no blocker remains. */
   executionBlocker?: ArbitrageOpportunityExecutionBlocker;
   status: ArbitrageOpportunityStatus;

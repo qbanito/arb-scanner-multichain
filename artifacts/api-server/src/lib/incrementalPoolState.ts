@@ -57,7 +57,11 @@ export class IncrementalPoolStateEngine {
       addressToKeys.set(address, [...(addressToKeys.get(address) ?? []), key]);
     }
     const fullRefresh = async (): Promise<IncrementalRefreshResult<TVenue>> => {
-      const refreshed = await refreshCyclePoolRates(args.client, args.pools);
+      const refreshed = await refreshCyclePoolRates(
+        args.client,
+        args.pools,
+        args.blockNumber,
+      );
       this.snapshots.set(args.chain, {
         blockNumber: args.blockNumber,
         pools: new Map(refreshed.pools.map((pool) => [cyclePoolEdgeKey(pool), pool])),
@@ -128,7 +132,11 @@ export class IncrementalPoolStateEngine {
     let live = 0;
     let fallback = 0;
     if (changedPools.length > 0) {
-      const refreshed = await refreshCyclePoolRates(args.client, changedPools);
+      const refreshed = await refreshCyclePoolRates(
+        args.client,
+        changedPools,
+        args.blockNumber,
+      );
       live = refreshed.live;
       fallback = refreshed.fallback;
       for (const pool of refreshed.pools) merged.set(cyclePoolEdgeKey(pool), pool);

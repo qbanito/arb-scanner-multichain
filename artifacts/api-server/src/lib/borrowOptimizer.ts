@@ -45,6 +45,12 @@ export async function optimizeBorrowSize<T>(args: {
   minBorrowUsd?: number;
   /** Fixed USD points, normally the strategy's capital ladder. */
   preferredBorrowUsd?: readonly number[];
+  /**
+   * AMM price impact is monotonic for the supported exact-input adapters. If
+   * the smallest viable trade is already at or below this score, larger
+   * sizes cannot rescue it and would only consume more RPC quote calls.
+   */
+  stopAfterFirstIfValueAtMost?: number;
   evaluate: (borrowUsd: number) => Promise<{ value: number; result: T } | null>;
   refinementIterations?: number;
 }): Promise<BorrowEvaluation<T> | null> {
@@ -68,7 +74,14 @@ export async function optimizeBorrowSize<T>(args: {
     return value;
   };
 
-  for (const size of coarse) await at(size);
+  const first = await at(coarse[0]!);
+  if (
+    first &&
+    args.stopAfterFirstIfValueAtMost !== undefined &&
+    first.value <= args.stopAfterFirstIfValueAtMost
+  )
+    return first;
+  for (const size of coarse.slice(1)) await at(size);
   const successful = () => [...evaluated.values()].filter((item): item is BorrowEvaluation<T> => item !== null);
   let best = successful().sort((a, b) => b.value - a.value)[0] ?? null;
   if (!best) return null;

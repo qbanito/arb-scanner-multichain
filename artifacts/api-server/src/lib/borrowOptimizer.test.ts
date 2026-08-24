@@ -41,3 +41,18 @@ test("does not sample dust when the strategy sets a viable minimum", async () =>
   assert.ok(sampled.includes(2_500));
   assert.equal(quote.borrowUsd, 10_000);
 });
+
+test("stops after a non-profitable minimum-size AMM quote", async () => {
+  const sampled: number[] = [];
+  const quote = await optimizeBorrowSize({
+    maxBorrowUsd: 100_000,
+    minBorrowUsd: 1_000,
+    stopAfterFirstIfValueAtMost: 0,
+    evaluate: async (borrowUsd) => {
+      sampled.push(borrowUsd);
+      return { value: -borrowUsd / 1_000, result: borrowUsd };
+    },
+  });
+  assert.ok(quote);
+  assert.deepEqual(sampled, [1_000]);
+});

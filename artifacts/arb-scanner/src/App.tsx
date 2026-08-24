@@ -1497,6 +1497,18 @@ function NearMisses({ data }: { data?: ArbitrageOpportunity[] }) {
         .slice(0, 4),
     [data],
   );
+  const quoteBottlenecks = useMemo(() => {
+    const counts = new Map<string, { adapter: string; reason: string; count: number }>();
+    for (const item of data ?? []) {
+      if (item.executionBlocker !== "quote-failed") continue;
+      const adapter = item.quoteFailureAdapter ?? "unknown adapter";
+      const reason = item.quoteFailureReason ?? "no diagnostic returned";
+      const key = `${adapter}:${reason}`;
+      const previous = counts.get(key);
+      counts.set(key, { adapter, reason, count: (previous?.count ?? 0) + 1 });
+    }
+    return [...counts.values()].sort((a, b) => b.count - a.count).slice(0, 4);
+  }, [data]);
   return (
     <section className="mb-5 rounded-2xl border border-warning/25 bg-warning/5 p-4 sm:p-5">
       <div className="font-mono-tight text-[10px] uppercase tracking-[0.14em] text-warning">Top near-misses</div>
@@ -1518,6 +1530,19 @@ function NearMisses({ data }: { data?: ArbitrageOpportunity[] }) {
             No exact quoted near-miss in this snapshot. The funnel above shows whether this is due to quote coverage or no gross-positive routes.
           </div>
         )}
+      </div>
+      <div className="mt-4 border-t border-border/60 pt-3">
+        <div className="font-mono-tight text-[9px] uppercase tracking-wide text-muted-foreground">Exact-quote bottlenecks</div>
+        <div className="mt-2 grid gap-2 lg:grid-cols-2">
+          {quoteBottlenecks.length ? quoteBottlenecks.map((failure) => (
+            <div key={`${failure.adapter}:${failure.reason}`} className="rounded-xl border border-border/60 bg-background/35 px-3 py-2.5 font-mono-tight">
+              <div className="text-[10px] text-foreground">{failure.adapter} · {failure.count} routes</div>
+              <div className="mt-1 line-clamp-2 text-[9px] text-muted-foreground">{failure.reason}</div>
+            </div>
+          )) : (
+            <div className="font-mono-tight text-[9px] text-muted-foreground">No adapter failures in this snapshot.</div>
+          )}
+        </div>
       </div>
     </section>
   );

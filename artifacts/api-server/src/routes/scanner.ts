@@ -132,6 +132,8 @@ type Opportunity = {
   executable: boolean;
   executorDeployed?: boolean;
   quoteStatus?: "estimated" | "quoted" | "unavailable";
+  quoteFailureAdapter?: string;
+  quoteFailureReason?: string;
   executionBlocker?:
     | "negative-net"
     | "executor-not-deployed"
@@ -1311,6 +1313,16 @@ const GLOBAL_CHAIN_WAIT_MS = boundedEnvInt(
 );
 const rpcPrimaryDisabledUntil = new Map<ChainId, number>();
 const quoteScheduler = new FairQuoteScheduler();
+const quoteFailureBackoff = new Map<
+  string,
+  { retryAfterBlock: number; adapter: string; reason: string }
+>();
+const QUOTE_FAILURE_BACKOFF_BLOCKS = boundedEnvInt(
+  "SCANNER_QUOTE_FAILURE_BACKOFF_BLOCKS",
+  16,
+  1,
+  10_000,
+);
 const poolStateEngine = new IncrementalPoolStateEngine();
 // DexScreener documents a 300 requests/minute limit for pair endpoints. Keep
 // one process-wide gate because `chain=all` scans fourteen networks in
@@ -2095,6 +2107,17 @@ function validTokenAddress(
   return Boolean(address && /^0x[a-fA-F0-9]{40}$/.test(address));
 }
 
+/**
+ * DexScreener represents an edge of some multi-asset pools as
+ * `pool-tokenA-tokenB`. The first segment is the contract that must receive
+ * get_dy/exchange calls; the full composite remains useful only as an indexer
+ * edge id.
+ */
+function poolContractAddress(address: string | undefined): string | null {
+  const contract = address?.split("-")[0];
+  return validTokenAddress(contract) ? contract : null;
+}
+
 // Tokens proven incompatible by a full ArbExecutor eth_estimateGas are kept
 // out of the executable cycle graph. VIN and YFSX both reverted when a
 // Pancake V2 router tried to spend the output of the preceding hop, so their
@@ -2543,12 +2566,13 @@ function buildOpportunities(
     if (!address) continue;
     const priced = pairs
       .map((pair) => {
+        const pairAddress = poolContractAddress(pair.pairAddress);
         const normalized = normalizeTrackedPair(pair, address);
         const stateKey =
-          pair.pairAddress &&
+          pairAddress &&
           pair.baseToken?.address &&
           pair.quoteToken?.address
-            ? `${pair.pairAddress.toLowerCase()}:${pair.baseToken.address.toLowerCase()}:${pair.quoteToken.address.toLowerCase()}`
+            ? `${pairAddress.toLowerCase()}:${pair.baseToken.address.toLowerCase()}:${pair.quoteToken.address.toLowerCase()}`
             : undefined;
         const liveState = stateKey ? livePoolStates.get(stateKey) : undefined;
         if (
@@ -2558,12 +2582,13 @@ function buildOpportunities(
           QUOTE_DECIMALS[normalized.counterTokenAddress.toLowerCase()] ===
             undefined
         ) {
-          return { pair, normalized };
+          return { pair, normalized, pairAddress };
         }
         const trackedIsBase =
           pair.baseToken?.address?.toLowerCase() === address.toLowerCase();
         return {
           pair,
+          pairAddress,
           normalized: {
             ...normalized,
             priceUsd: trackedIsBase
@@ -2573,12 +2598,12 @@ function buildOpportunities(
         };
       })
       .filter(
-        ({ pair, normalized }) =>
+        ({ pair, normalized, pairAddress }) =>
           normalized !== null &&
           normalized.priceUsd > 0 &&
           Number(pair.liquidity?.usd ?? 0) > 10_000 &&
           pair.dexId &&
-          pair.pairAddress,
+          pairAddress,
       );
     const prices = priced
       .map(({ normalized }) => normalized!.priceUsd)
@@ -2591,7 +2616,7 @@ function buildOpportunities(
           normalized!.priceUsd >= median * 0.7 &&
           normalized!.priceUsd <= median * 1.3,
       )
-      .map(({ pair, normalized }) => ({
+      .map(({ pair, normalized, pairAddress }) => ({
         name: pair
           .dexId!.replace(/-/g, " ")
           .replace(/\b\w/g, (char) => char.toUpperCase()),
@@ -2600,8 +2625,8 @@ function buildOpportunities(
         priceUsd: normalized!.priceUsd,
         liquidityUsd: Number(pair.liquidity?.usd ?? 0),
         feeBps:
-          (pair.pairAddress
-            ? livePoolStates.get(pair.pairAddress.toLowerCase())?.feeBps
+          (pairAddress
+            ? livePoolStates.get(pairAddress.toLowerCase())?.feeBps
             : undefined) ??
           (pair.dexId === "curve"
             ? 4
@@ -2609,9 +2634,9 @@ function buildOpportunities(
                 pair.labels?.some((label) => label.toLowerCase() === "v2")
               ? 25
               : 30),
-        pairAddress: pair.pairAddress!,
+        pairAddress: pairAddress!,
         dexUrl:
-          pair.url ?? `${RPCS[chain].explorer}/address/${pair.pairAddress}`,
+          pair.url ?? `${RPCS[chain].explorer}/address/${pairAddress}`,
         volume24h: Number(pair.volume?.h24 ?? 0),
         labels: pair.labels,
         quoteTokenAddress: normalized!.counterTokenAddress,
@@ -2712,7 +2737,7 @@ function buildCyclePools(
 
   for (const { pairs } of markets) {
     for (const pair of pairs) {
-      const pairAddress = pair.pairAddress;
+      const pairAddress = poolContractAddress(pair.pairAddress);
       const baseAddress = pair.baseToken?.address;
       const quoteAddress = pair.quoteToken?.address;
       if (!pairAddress || !baseAddress || !quoteAddress || !pair.dexId)
@@ -3407,6 +3432,10 @@ async function scan(chain: "all" | ChainId) {
         ];
         const minimumBorrow = minBorrowUsd(item);
         const minimumRouteLiquidity = minRouteLiquidityUsd(item);
+        for (const [id, failure] of quoteFailureBackoff) {
+          if (failure.retryAfterBlock + 64 < status.blockNumber)
+            quoteFailureBackoff.delete(id);
+        }
         const qualityBlocker = (candidate: Opportunity) => {
           if (candidate.profit.recommendedBorrowUsd < minimumBorrow)
             return "below-minimum-size" as const;
@@ -3423,7 +3452,11 @@ async function scan(chain: "all" | ChainId) {
             : undefined;
         };
         const quoteEligibleCandidates = candidates.filter(
-          (candidate) => candidate.executable && !qualityBlocker(candidate),
+          (candidate) =>
+            candidate.executable &&
+            !qualityBlocker(candidate) &&
+            (quoteFailureBackoff.get(candidate.id)?.retryAfterBlock ?? 0) <=
+              status.blockNumber,
         );
         const graphCandidates = candidates
           .filter(
@@ -3478,6 +3511,12 @@ async function scan(chain: "all" | ChainId) {
         const regularGraphCandidates = graphCandidates.filter(
           (candidate) => !candidate.id.startsWith(`${item}-priority-`),
         );
+        const shortGraphCandidates = regularGraphCandidates.filter(
+          (candidate) => (candidate.routeLegs?.length ?? 0) <= 3,
+        );
+        const longGraphCandidates = regularGraphCandidates.filter(
+          (candidate) => (candidate.routeLegs?.length ?? 0) > 3,
+        );
         // Reserve most of BSC's priority quote capacity for liquid, actively
         // traded canonical meme routes. Any unused meme capacity immediately
         // flows back to the existing core templates and generic graph.
@@ -3494,22 +3533,31 @@ async function scan(chain: "all" | ChainId) {
           memePriorityBudget + corePriorityBudget,
         );
         const remainingQuoteBudget = exactQuoteBudget - priorityBudget;
-        let graphBudget = Math.min(
-          regularGraphCandidates.length,
-          Math.ceil(remainingQuoteBudget * 0.6),
-        );
         let directBudget = Math.min(
           directCandidates.length,
-          remainingQuoteBudget - graphBudget,
+          Math.ceil(remainingQuoteBudget * 0.15),
         );
-        graphBudget = Math.min(
-          regularGraphCandidates.length,
-          graphBudget +
-            Math.max(0, remainingQuoteBudget - graphBudget - directBudget),
+        const graphBudget = remainingQuoteBudget - directBudget;
+        let shortGraphBudget = Math.min(
+          shortGraphCandidates.length,
+          Math.ceil(graphBudget * 0.8),
+        );
+        let longGraphBudget = Math.min(
+          longGraphCandidates.length,
+          graphBudget - shortGraphBudget,
+        );
+        shortGraphBudget = Math.min(
+          shortGraphCandidates.length,
+          shortGraphBudget +
+            Math.max(0, graphBudget - shortGraphBudget - longGraphBudget),
+        );
+        longGraphBudget = Math.min(
+          longGraphCandidates.length,
+          graphBudget - shortGraphBudget,
         );
         directBudget = Math.min(
           directCandidates.length,
-          remainingQuoteBudget - graphBudget,
+          remainingQuoteBudget - shortGraphBudget - longGraphBudget,
         );
         const selectedForExactQuote = new Set([
           ...quoteScheduler.select(
@@ -3525,9 +3573,15 @@ async function scan(chain: "all" | ChainId) {
             status.blockNumber,
           ),
           ...quoteScheduler.select(
-            `${item}:graph`,
-            regularGraphCandidates.map((candidate) => candidate.id),
-            graphBudget,
+            `${item}:short-graph`,
+            shortGraphCandidates.map((candidate) => candidate.id),
+            shortGraphBudget,
+            status.blockNumber,
+          ),
+          ...quoteScheduler.select(
+            `${item}:long-graph`,
+            longGraphCandidates.map((candidate) => candidate.id),
+            longGraphBudget,
             status.blockNumber,
           ),
           ...quoteScheduler.select(
@@ -3546,7 +3600,10 @@ async function scan(chain: "all" | ChainId) {
             memePriorityBudget,
             priorityQueue: quoteScheduler.stats(`${item}:priority`),
             memePriorityQueue: quoteScheduler.stats(`${item}:meme-priority`),
-            graphQueue: quoteScheduler.stats(`${item}:graph`),
+            shortGraphBudget,
+            longGraphBudget,
+            shortGraphQueue: quoteScheduler.stats(`${item}:short-graph`),
+            longGraphQueue: quoteScheduler.stats(`${item}:long-graph`),
             directQueue: quoteScheduler.stats(`${item}:direct`),
             minimumBorrow,
             minimumRouteLiquidity,
@@ -3564,6 +3621,25 @@ async function scan(chain: "all" | ChainId) {
               executable: false,
               quoteStatus: "estimated" as const,
               executionBlocker: blocker,
+              profit: {
+                ...candidate.profit,
+                netProfitUsd: 0,
+                confidence: "low" as const,
+              },
+            };
+          const priorFailure = quoteFailureBackoff.get(candidate.id);
+          if (
+            candidate.executable &&
+            priorFailure &&
+            priorFailure.retryAfterBlock > status.blockNumber
+          )
+            return {
+              ...candidate,
+              executable: false,
+              quoteStatus: "unavailable" as const,
+              executionBlocker: "quote-failed" as const,
+              quoteFailureAdapter: priorFailure.adapter,
+              quoteFailureReason: `${priorFailure.reason} (retry after block ${priorFailure.retryAfterBlock})`,
               profit: {
                 ...candidate.profit,
                 netProfitUsd: 0,
@@ -3602,6 +3678,9 @@ async function scan(chain: "all" | ChainId) {
           async (opportunity) => {
             if (!opportunity.executable) return opportunity;
             try {
+              let quoteFailure:
+                | { adapter: string; reason: string }
+                | undefined;
               if (
                 (opportunity.routeKind === "two-pool" ||
                   opportunity.routeKind === "triangular" ||
@@ -3627,6 +3706,16 @@ async function scan(chain: "all" | ChainId) {
                       maxBorrowUsd: opportunity.profit.recommendedBorrowUsd,
                       minBorrowUsd: minimumBorrow,
                       slippageBps: 20,
+                      blockNumber: BigInt(opportunity.blockNumber),
+                      onFailure: (diagnostic) => {
+                        quoteFailure = diagnostic;
+                        quoteFailureBackoff.set(opportunity.id, {
+                          retryAfterBlock:
+                            opportunity.blockNumber +
+                            QUOTE_FAILURE_BACKOFF_BLOCKS,
+                          ...diagnostic,
+                        });
+                      },
                     })
                   : null;
                 const gasCostUsd =
@@ -3641,6 +3730,14 @@ async function scan(chain: "all" | ChainId) {
                     executable: false,
                     quoteStatus: "unavailable" as const,
                     executionBlocker: "quote-failed" as const,
+                    quoteFailureAdapter:
+                      quoteFailure?.adapter ??
+                      (borrowTokenPriceUsd ? "route" : "price-oracle"),
+                    quoteFailureReason:
+                      quoteFailure?.reason ??
+                      (borrowTokenPriceUsd
+                        ? "exact route quote returned no valid size"
+                        : "borrow asset has no current USD reference"),
                     profit: {
                       ...opportunity.profit,
                       netProfitUsd: 0,
@@ -3648,6 +3745,7 @@ async function scan(chain: "all" | ChainId) {
                       confidence: "low" as const,
                     },
                   };
+                quoteFailureBackoff.delete(opportunity.id);
                 const executorDeployed = EXECUTOR_DEPLOYED.has(
                   opportunity.chainId,
                 );
@@ -3734,6 +3832,16 @@ async function scan(chain: "all" | ChainId) {
                     minBorrowUsd: minimumBorrow,
                     slippageBps: 20,
                     borrowTokenPriceUsd,
+                    blockNumber: BigInt(opportunity.blockNumber),
+                    onFailure: (diagnostic) => {
+                      quoteFailure = diagnostic;
+                      quoteFailureBackoff.set(opportunity.id, {
+                        retryAfterBlock:
+                          opportunity.blockNumber +
+                          QUOTE_FAILURE_BACKOFF_BLOCKS,
+                        ...diagnostic,
+                      });
+                    },
                   })
                 : null;
               const gasCostUsd =
@@ -3748,6 +3856,14 @@ async function scan(chain: "all" | ChainId) {
                   executable: false,
                   quoteStatus: "unavailable" as const,
                   executionBlocker: "quote-failed" as const,
+                  quoteFailureAdapter:
+                    quoteFailure?.adapter ??
+                    (borrowTokenPriceUsd ? "route" : "price-oracle"),
+                  quoteFailureReason:
+                    quoteFailure?.reason ??
+                    (borrowTokenPriceUsd
+                      ? "exact route quote returned no valid size"
+                      : "borrow asset has no current USD reference"),
                   profit: {
                     ...opportunity.profit,
                     netProfitUsd: 0,
@@ -3755,6 +3871,7 @@ async function scan(chain: "all" | ChainId) {
                     confidence: "low" as const,
                   },
                 };
+              quoteFailureBackoff.delete(opportunity.id);
               const executorDeployed = EXECUTOR_DEPLOYED.has(
                 opportunity.chainId,
               );
@@ -3801,6 +3918,11 @@ async function scan(chain: "all" | ChainId) {
                 executable: false,
                 quoteStatus: "unavailable" as const,
                 executionBlocker: "quote-failed" as const,
+                quoteFailureAdapter: "scanner",
+                quoteFailureReason:
+                  err instanceof Error
+                    ? err.message.replace(/\s+/g, " ").slice(0, 180)
+                    : "unexpected exact quote failure",
                 profit: {
                   ...opportunity.profit,
                   netProfitUsd: 0,

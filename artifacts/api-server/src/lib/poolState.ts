@@ -108,6 +108,7 @@ export function liquidityBookBaseToQuote(args: {
 export async function refreshCyclePoolRates<TVenue extends PoolVenue>(
   client: any,
   pools: CyclePool<TVenue>[],
+  blockNumber?: number,
 ): Promise<{ pools: CyclePool<TVenue>[]; live: number; fallback: number }> {
   const contracts: any[] = [];
   const metadata: Array<{ pool: CyclePool<TVenue>; kind: PoolKind; token0Index: number; stateIndex: number; feeIndex?: number; binStepIndex?: number; clStateIndex?: number; clFeeIndex?: number }> = [];
@@ -137,7 +138,12 @@ export async function refreshCyclePoolRates<TVenue extends PoolVenue>(
 
   let results: Array<{ status: string; result?: unknown }>;
   try {
-    results = await client.multicall({ contracts, allowFailure: true, batchSize: 8_192 });
+    results = await client.multicall({
+      contracts,
+      allowFailure: true,
+      batchSize: 8_192,
+      ...(blockNumber === undefined ? {} : { blockNumber: BigInt(blockNumber) }),
+    });
   } catch {
     return { pools, live: 0, fallback: pools.length };
   }

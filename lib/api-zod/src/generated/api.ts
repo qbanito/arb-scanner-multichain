@@ -294,6 +294,8 @@ export const GetScannerOpportunitiesResponseItem = zod.object({
   "executable": zod.boolean(),
   "executorDeployed": zod.boolean().optional().describe('Whether this chain currently has a configured ArbExecutor deployment. False means exact-profit monitoring only.'),
   "quoteStatus": zod.enum(['estimated', 'quoted', 'unavailable']).optional().describe('Whether profit is only graph-estimated, fully quoted on-chain, or could not be quoted by a verified adapter.'),
+  "quoteFailureAdapter": zod.string().optional().describe('Adapter and route leg that prevented an exact quote.'),
+  "quoteFailureReason": zod.string().optional().describe('Bounded diagnostic returned when the exact quote is unavailable.'),
   "executionBlocker": zod.enum(['negative-net', 'executor-not-deployed', 'quote-budget', 'quote-failed', 'below-minimum-size', 'insufficient-liquidity', 'target-not-allowed', 'unsupported-or-open-route']).optional().describe('Concrete reason the route cannot currently be submitted. Omitted when no blocker remains.'),
   "status": zod.enum(['new', 'monitoring', 'stale'])
 })
@@ -384,6 +386,8 @@ export const GetScannerOpportunityResponse = zod.object({
   "executable": zod.boolean(),
   "executorDeployed": zod.boolean().optional().describe('Whether this chain currently has a configured ArbExecutor deployment. False means exact-profit monitoring only.'),
   "quoteStatus": zod.enum(['estimated', 'quoted', 'unavailable']).optional().describe('Whether profit is only graph-estimated, fully quoted on-chain, or could not be quoted by a verified adapter.'),
+  "quoteFailureAdapter": zod.string().optional().describe('Adapter and route leg that prevented an exact quote.'),
+  "quoteFailureReason": zod.string().optional().describe('Bounded diagnostic returned when the exact quote is unavailable.'),
   "executionBlocker": zod.enum(['negative-net', 'executor-not-deployed', 'quote-budget', 'quote-failed', 'below-minimum-size', 'insufficient-liquidity', 'target-not-allowed', 'unsupported-or-open-route']).optional().describe('Concrete reason the route cannot currently be submitted. Omitted when no blocker remains.'),
   "status": zod.enum(['new', 'monitoring', 'stale'])
 })

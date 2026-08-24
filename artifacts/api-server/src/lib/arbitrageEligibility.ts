@@ -158,7 +158,13 @@ export function venueSupported(chainId: number, venue: RouteVenue): boolean {
   if (dex === "camelot") return chainId === 42161 && !labels.has("v3") && !labels.has("v4");
   if (dex === "pancakeswap") {
     if (labels.has("v1") || labels.has("infinity") || labels.has("v4")) return false;
-    return PANCAKESWAP_CHAINS.has(chainId);
+    // An unlabeled Pancake contract may be StableSwap or Infinity and does
+    // not necessarily expose either V2 getAmountsOut semantics or V3 fee().
+    // Only admit a generation whose adapter ABI is known.
+    return (
+      (labels.has("v2") || labels.has("v3")) &&
+      PANCAKESWAP_CHAINS.has(chainId)
+    );
   }
   if (dex === "velodrome") {
     // DexScreener labels concentrated-liquidity Slipstream pools with no
