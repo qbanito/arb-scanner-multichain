@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.arb-scanner.executor-bsc</string>
+  <string>com.arb-scanner.executor</string>
   <key>ProgramArguments</key>
   <array>
     <string>/Users/neiveralvarez/.nvm/versions/node/v24.18.0/bin/node</string>
@@ -13,11 +13,6 @@
   </array>
   <key>WorkingDirectory</key>
   <string>/Users/neiveralvarez/Desktop/HERRMIENTAS FINANCIERAS/MIS BOTS DE ARBITRAGE 24-7 DEXE DEFI /SCANNER_ARBITRAGE_OPS/artifacts/executor-bot</string>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>EXECUTION_CHAIN_IDS</key>
-    <string>56</string>
-  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -25,8 +20,8 @@
   <key>ThrottleInterval</key>
   <integer>10</integer>
   <key>StandardOutPath</key>
-  <string>/tmp/arb-scanner-executor-bsc.launchd.log</string>
+  <string>/tmp/arb-scanner-executor.launchd.log</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/arb-scanner-executor-bsc.launchd.log</string>
+  <string>/tmp/arb-scanner-executor.launchd.log</string>
 </dict>
 </plist>

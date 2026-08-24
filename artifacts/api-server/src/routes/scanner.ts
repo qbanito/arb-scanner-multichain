@@ -553,6 +553,26 @@ for (const token of TOKEN_DEFINITIONS) {
 
 TOKEN_DEFINITIONS.push(
   {
+    // Canonical Ethereum contracts, verified via the token contracts' own
+    // decimals() calls before being admitted to the priority route catalog.
+    symbol: "SPX",
+    name: "SPX6900",
+    decimals: 8,
+    addresses: { ethereum: "0xe0f63a424a4439cbe457d80e4f4b51ad25b2c56c" },
+  },
+  {
+    symbol: "NEIRO",
+    name: "First Neiro on Ethereum",
+    decimals: 9,
+    addresses: { ethereum: "0x812ba41e071c7b7fa4ebcfb62df5f45f6fa853ee" },
+  },
+  {
+    symbol: "MEME",
+    name: "Memecoin",
+    decimals: 18,
+    addresses: { ethereum: "0xb131f4a55907b10d1f0a50d8ab8fa09ec342cd74" },
+  },
+  {
     symbol: "USDB.C",
     name: "USD Base Coin",
     decimals: 6,
@@ -1096,6 +1116,56 @@ const NON_FLASH_BORROW_ASSETS: Partial<Record<ChainId, ReadonlySet<string>>> = {
   // Aave reserve merely because it trades near $1.
   bsc: new Set([BSC_USD1]),
 };
+
+// Ethereum priority routes are closed atomic cycles only. The capital asset
+// is both the first and last leg; every intermediate token must be backed by
+// a real indexed pool and pass the final exact quote/simulation gates.
+const ETHEREUM_CORE_PRIORITY_ROUTE_SYMBOLS = [
+  ["WETH", "USDC", "WETH"],
+  ["USDC", "WETH", "USDC"],
+  ["USDT", "WETH", "USDT"],
+  ["USDC", "USDT", "USDC"],
+  ["DAI", "USDC", "DAI"],
+  ["WETH", "WBTC", "WETH"],
+  ["USDC", "WBTC", "USDC"],
+  ["WETH", "LINK", "WETH"],
+  ["WETH", "UNI", "WETH"],
+  ["WETH", "AAVE", "WETH"],
+] as const;
+const ETHEREUM_MEME_PRIORITY_SYMBOLS = [
+  "PEPE",
+  "SHIB",
+  "MOG",
+  "SPX",
+  "TURBO",
+  "FLOKI",
+  "NEIRO",
+  "MEME",
+] as const;
+const ETHEREUM_MEME_PRIORITY_ROUTE_SYMBOLS = [
+  ["WETH", "PEPE", "WETH"],
+  ["USDC", "PEPE", "USDC"],
+  ["WETH", "SHIB", "WETH"],
+  ["WETH", "MOG", "WETH"],
+  ["WETH", "SPX", "WETH"],
+  ["WETH", "TURBO", "WETH"],
+  ["WETH", "FLOKI", "WETH"],
+  ["WETH", "NEIRO", "WETH"],
+] as const;
+// "MEME" in these patterns is expanded only to the curated, address-pinned
+// Ethereum meme set above. It is never a ticker lookup from an untrusted
+// indexer, so a spoofed token cannot become an executable template.
+const ETHEREUM_MEME_CROSS_ROUTE_SYMBOLS = ETHEREUM_MEME_PRIORITY_SYMBOLS.flatMap(
+  (symbol) => [
+    ["USDC", symbol, "WETH", "USDC"],
+    ["WETH", symbol, "USDC", "WETH"],
+  ],
+);
+const ETHEREUM_PRIORITY_ROUTE_SYMBOLS = [
+  ...ETHEREUM_CORE_PRIORITY_ROUTE_SYMBOLS,
+  ...ETHEREUM_MEME_PRIORITY_ROUTE_SYMBOLS,
+  ...ETHEREUM_MEME_CROSS_ROUTE_SYMBOLS,
+] as const;
 
 const BSC_CORE_PRIORITY_ROUTE_SYMBOLS = [
   ["USDT", "WBNB", "USDC", "USDT"],
@@ -2713,18 +2783,21 @@ function buildGraphOpportunities(
   for (const address of EXTRA_FLASH_BORROW_ASSETS[chain] ?? [])
     borrowAssets.add(address);
 
-  const priorityTemplates =
+  const priorityRouteSymbols =
     chain === "bsc"
-      ? BSC_PRIORITY_ROUTE_SYMBOLS.flatMap((symbols, index) => {
-          const addresses = symbols.map((symbol) =>
-            [...tokenByAddress.values()].find((token) => token.symbol === symbol)
-              ?.address,
-          );
-          return addresses.every((address): address is string => Boolean(address))
-            ? [{ id: `route-${index + 1}`, tokenAddresses: addresses }]
-            : [];
-        })
+      ? BSC_PRIORITY_ROUTE_SYMBOLS
+      : chain === "ethereum"
+        ? ETHEREUM_PRIORITY_ROUTE_SYMBOLS
+        : [];
+  const priorityTemplates = priorityRouteSymbols.flatMap((symbols, index) => {
+    const addresses = symbols.map((symbol) =>
+      [...tokenByAddress.values()].find((token) => token.symbol === symbol)
+        ?.address,
+    );
+    return addresses.every((address): address is string => Boolean(address))
+      ? [{ id: `route-${index + 1}`, tokenAddresses: addresses }]
       : [];
+  });
   // New hot-meme assets do not inherit permission to trade just because an
   // indexer saw volume. They can, however, be tested as explicit *closed*
   // route shapes. A missing leg simply yields no candidate—never a synthetic
@@ -3248,11 +3321,12 @@ async function scan(chain: "all" | ChainId) {
           1,
           SEARCH_LIMITS.maxExactQuotes,
         );
-        // Operator-selected BSC cycles get first access to exact quotes whenever
-        // their fee-adjusted spot estimate is positive. The remaining budget is
-        // shared fairly between generic graph and direct-route candidates.
+        // Operator-selected cycles (including the Ethereum core/meme catalog)
+        // get first access to exact quotes whenever their fee-adjusted spot
+        // estimate is positive. The remaining budget is shared fairly between
+        // generic graph and direct-route candidates.
         const priorityCandidates = graphCandidates.filter((candidate) =>
-          candidate.id.startsWith("bsc-priority-"),
+          candidate.id.startsWith(`${item}-priority-`),
         );
         const highPotentialMemeCandidates = priorityCandidates.filter(
           isHighPotentialBscMeme,
@@ -3261,7 +3335,7 @@ async function scan(chain: "all" | ChainId) {
           (candidate) => !isHighPotentialBscMeme(candidate),
         );
         const regularGraphCandidates = graphCandidates.filter(
-          (candidate) => !candidate.id.startsWith("bsc-priority-"),
+          (candidate) => !candidate.id.startsWith(`${item}-priority-`),
         );
         // Reserve most of BSC's priority quote capacity for liquid, actively
         // traded canonical meme routes. Any unused meme capacity immediately
