@@ -331,6 +331,26 @@ function amountForPrice(amountUsd: number, priceUsd: number, decimals: number): 
   return parseUnits(units.toFixed(precision), decimals);
 }
 
+async function withinChainScanBudget<T>(promise: Promise<T>, chain: ChainId): Promise<T> {
+  const timeoutMs = Math.floor(envNumber("ACROSS_CHAIN_SCAN_TIMEOUT_MS", 10_000, 3_000, 30_000));
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`Across market scan exceeded ${timeoutMs}ms for ${chain}`)),
+      timeoutMs,
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 let acrossSnapshot: { expiresAt: number; value: AcrossOpportunitySnapshot } | null = null;
 let acrossScanInFlight: Promise<AcrossOpportunitySnapshot> | null = null;
 
@@ -350,7 +370,12 @@ export async function scanAcrossOpportunities(force = false): Promise<AcrossOppo
   const startedAt = new Date().toISOString();
 
   acrossScanInFlight = (async () => {
-    const settled = await Promise.allSettled(chains.map(async (chain) => ({ chain, markets: await liveMarkets(chain) })));
+    const settled = await Promise.allSettled(
+      chains.map(async (chain) => ({
+        chain,
+        markets: await withinChainScanBudget(liveMarkets(chain), chain),
+      })),
+    );
     const successful = settled.flatMap((item) => item.status === "fulfilled" ? [item.value] : []);
     const prices = new Map<ChainId, Map<string, MarketPrice>>(
       successful.map(({ chain, markets }) => [chain, bestMarketPrices(chain, markets)]),
