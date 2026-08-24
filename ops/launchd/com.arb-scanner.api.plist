@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.arb-scanner.api</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/neiveralvarez/.nvm/versions/node/v24.18.0/bin/node</string>
+    <string>--env-file-if-exists=.env</string>
+    <string>--enable-source-maps</string>
+    <string>./dist/index.mjs</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/neiveralvarez/Desktop/HERRMIENTAS FINANCIERAS/MIS BOTS DE ARBITRAGE 24-7 DEXE DEFI /SCANNER_ARBITRAGE_OPS/artifacts/api-server</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PORT</key>
+    <string>8080</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>/tmp/arb-scanner-api.launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/arb-scanner-api.launchd.log</string>
+</dict>
+</plist>
