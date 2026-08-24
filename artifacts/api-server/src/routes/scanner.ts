@@ -3692,6 +3692,14 @@ async function scan(chain: "all" | ChainId) {
                   item,
                   borrowedAsset,
                 );
+                // Pin each exact route immediately before quoting it. BNB
+                // public RPCs retain only a very small historical window, so
+                // the discovery block can become an archive request while a
+                // large graph is being ranked. Every leg in this candidate
+                // still reads the same block, preserving quote consistency.
+                const quoteBlockNumber = await CHAIN_CLIENTS[item]
+                  .getBlockNumber({ cacheTime: 0 })
+                  .catch(() => BigInt(opportunity.blockNumber));
                 const quote = borrowTokenPriceUsd
                   ? await quoteAtomicCycle(CHAIN_CLIENTS[item], {
                       chainId: opportunity.chainId,
@@ -3706,12 +3714,12 @@ async function scan(chain: "all" | ChainId) {
                       maxBorrowUsd: opportunity.profit.recommendedBorrowUsd,
                       minBorrowUsd: minimumBorrow,
                       slippageBps: 20,
-                      blockNumber: BigInt(opportunity.blockNumber),
+                      blockNumber: quoteBlockNumber,
                       onFailure: (diagnostic) => {
                         quoteFailure = diagnostic;
                         quoteFailureBackoff.set(opportunity.id, {
                           retryAfterBlock:
-                            opportunity.blockNumber +
+                            Number(quoteBlockNumber) +
                             QUOTE_FAILURE_BACKOFF_BLOCKS,
                           ...diagnostic,
                         });
@@ -3727,6 +3735,7 @@ async function scan(chain: "all" | ChainId) {
                 if (!quote)
                   return {
                     ...opportunity,
+                    blockNumber: Number(quoteBlockNumber),
                     executable: false,
                     quoteStatus: "unavailable" as const,
                     executionBlocker: "quote-failed" as const,
@@ -3761,6 +3770,7 @@ async function scan(chain: "all" | ChainId) {
                     : false;
                 return {
                   ...opportunity,
+                  blockNumber: Number(quoteBlockNumber),
                   executable:
                     netProfitUsd > 0 && executorDeployed && targetsAllowed,
                   quoteStatus: "quoted" as const,
@@ -3817,6 +3827,9 @@ async function scan(chain: "all" | ChainId) {
                 item,
                 buyQuoteAddress,
               );
+              const quoteBlockNumber = await CHAIN_CLIENTS[item]
+                .getBlockNumber({ cacheTime: 0 })
+                .catch(() => BigInt(opportunity.blockNumber));
               const quote = borrowTokenPriceUsd
                 ? await quoteClosedRoute(CHAIN_CLIENTS[item], {
                     chainId: opportunity.chainId,
@@ -3832,12 +3845,12 @@ async function scan(chain: "all" | ChainId) {
                     minBorrowUsd: minimumBorrow,
                     slippageBps: 20,
                     borrowTokenPriceUsd,
-                    blockNumber: BigInt(opportunity.blockNumber),
+                    blockNumber: quoteBlockNumber,
                     onFailure: (diagnostic) => {
                       quoteFailure = diagnostic;
                       quoteFailureBackoff.set(opportunity.id, {
                         retryAfterBlock:
-                          opportunity.blockNumber +
+                          Number(quoteBlockNumber) +
                           QUOTE_FAILURE_BACKOFF_BLOCKS,
                         ...diagnostic,
                       });
@@ -3853,6 +3866,7 @@ async function scan(chain: "all" | ChainId) {
               if (!quote)
                 return {
                   ...opportunity,
+                  blockNumber: Number(quoteBlockNumber),
                   executable: false,
                   quoteStatus: "unavailable" as const,
                   executionBlocker: "quote-failed" as const,
@@ -3885,6 +3899,7 @@ async function scan(chain: "all" | ChainId) {
                   : false;
               return {
                 ...opportunity,
+                blockNumber: Number(quoteBlockNumber),
                 executable:
                   netProfitUsd > 0 && executorDeployed && targetsAllowed,
                 quoteStatus: "quoted" as const,
