@@ -1091,11 +1091,23 @@ const BSC_CORE_PRIORITY_ROUTE_SYMBOLS = [
 const BSC_MEME_PRIORITY_ROUTE_SYMBOLS = [
   ["WBNB", "PEPE", "WBNB"],
   ["WBNB", "FLOKI", "WBNB"],
+  ["WBNB", "SHIB", "WBNB"],
+  ["WBNB", "DOGE", "WBNB"],
   // QUQ is anchored to the high-volume Pancake V3 QUQ/USDT pool supplied by
   // the operator. USDT is retained here because it is the pool's actual quote
   // asset; a WBNB leg is not fabricated when no WBNB/QUQ pool is present.
   ["USDT", "QUQ", "USDT"],
 ] as const;
+
+const BSC_MEME_PRIORITY_SYMBOLS = new Set([
+  "PEPE",
+  "FLOKI",
+  "SHIB",
+  "DOGE",
+  "QUQ",
+]);
+const BSC_MEME_MIN_POOL_LIQUIDITY_USD = 100_000;
+const BSC_MEME_MIN_ROUTE_VOLUME_24H_USD = 250_000;
 
 const BSC_PRIORITY_ROUTE_SYMBOLS = [
   ...BSC_CORE_PRIORITY_ROUTE_SYMBOLS,
@@ -2785,6 +2797,36 @@ function preliminaryNetScore(chain: ChainId, candidate: Opportunity): number {
   );
 }
 
+/**
+ * Meme routes are volatile enough that headline spread alone is a poor signal.
+ * Give first quote access only to the canonical meme templates when every leg
+ * has meaningful exit liquidity and the full route has current trading flow.
+ * Lower-quality meme candidates remain visible and are still served fairly by
+ * the normal priority queue instead of being silently discarded.
+ */
+function isHighPotentialBscMeme(candidate: Opportunity): boolean {
+  if (candidate.chainId !== RPCS.bsc.chainId || !candidate.routeLegs?.length)
+    return false;
+  if (
+    !candidate.routeLegs.some((leg) =>
+      BSC_MEME_PRIORITY_SYMBOLS.has(leg.tokenInSymbol.toUpperCase()) ||
+      BSC_MEME_PRIORITY_SYMBOLS.has(leg.tokenOutSymbol.toUpperCase()),
+    )
+  )
+    return false;
+  const lowestLiquidity = Math.min(
+    ...candidate.routeLegs.map((leg) => leg.venue.liquidityUsd),
+  );
+  const routeVolume24h = candidate.routeLegs.reduce(
+    (sum, leg) => sum + Math.max(0, leg.venue.volume24h ?? 0),
+    0,
+  );
+  return (
+    lowestLiquidity >= BSC_MEME_MIN_POOL_LIQUIDITY_USD &&
+    routeVolume24h >= BSC_MEME_MIN_ROUTE_VOLUME_24H_USD
+  );
+}
+
 async function scan(chain: "all" | ChainId) {
   const chains: ChainId[] = chain === "all" ? [...CHAIN_IDS] : [chain];
   const pendingScans = chains.map((item) =>
@@ -2891,12 +2933,29 @@ async function scan(chain: "all" | ChainId) {
         const priorityCandidates = graphCandidates.filter((candidate) =>
           candidate.id.startsWith("bsc-priority-"),
         );
+        const highPotentialMemeCandidates = priorityCandidates.filter(
+          isHighPotentialBscMeme,
+        );
+        const otherPriorityCandidates = priorityCandidates.filter(
+          (candidate) => !isHighPotentialBscMeme(candidate),
+        );
         const regularGraphCandidates = graphCandidates.filter(
           (candidate) => !candidate.id.startsWith("bsc-priority-"),
         );
+        // Reserve most of BSC's priority quote capacity for liquid, actively
+        // traded canonical meme routes. Any unused meme capacity immediately
+        // flows back to the existing core templates and generic graph.
+        const memePriorityBudget = Math.min(
+          highPotentialMemeCandidates.length,
+          Math.max(2, Math.ceil(exactQuoteBudget * 0.6)),
+        );
+        const corePriorityBudget = Math.min(
+          otherPriorityCandidates.length,
+          exactQuoteBudget - memePriorityBudget,
+        );
         const priorityBudget = Math.min(
-          priorityCandidates.length,
           exactQuoteBudget,
+          memePriorityBudget + corePriorityBudget,
         );
         const remainingQuoteBudget = exactQuoteBudget - priorityBudget;
         let graphBudget = Math.min(
@@ -2918,9 +2977,15 @@ async function scan(chain: "all" | ChainId) {
         );
         const selectedForExactQuote = new Set([
           ...quoteScheduler.select(
+            `${item}:meme-priority`,
+            highPotentialMemeCandidates.map((candidate) => candidate.id),
+            memePriorityBudget,
+            status.blockNumber,
+          ),
+          ...quoteScheduler.select(
             `${item}:priority`,
-            priorityCandidates.map((candidate) => candidate.id),
-            priorityBudget,
+            otherPriorityCandidates.map((candidate) => candidate.id),
+            corePriorityBudget,
             status.blockNumber,
           ),
           ...quoteScheduler.select(
@@ -2941,7 +3006,10 @@ async function scan(chain: "all" | ChainId) {
             chain: item,
             exactQuoteBudget,
             selected: selectedForExactQuote.size,
+            highPotentialMemeCandidates: highPotentialMemeCandidates.length,
+            memePriorityBudget,
             priorityQueue: quoteScheduler.stats(`${item}:priority`),
+            memePriorityQueue: quoteScheduler.stats(`${item}:meme-priority`),
             graphQueue: quoteScheduler.stats(`${item}:graph`),
             directQueue: quoteScheduler.stats(`${item}:direct`),
           },
