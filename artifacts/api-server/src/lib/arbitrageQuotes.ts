@@ -429,30 +429,20 @@ export async function quoteClosedRoute(client: any, args: { chainId: number; tok
           args.buyQuoteDecimals,
         );
         const bought = await quoteVenue(client, args.chainId, args.buy, args.buyQuoteAddress as `0x${string}`, args.tokenAddress as `0x${string}`, amountIn, args.blockNumber);
-        const guaranteedBought = bought * BigInt(10_000 - args.slippageBps) / 10_000n;
         activeAdapter = args.sell.dexId;
-        const sold = await quoteVenue(client, args.chainId, args.sell, args.tokenAddress as `0x${string}`, args.sellQuoteAddress as `0x${string}`, guaranteedBought, args.blockNumber);
-        const guaranteedSold = sold * BigInt(10_000 - args.slippageBps) / 10_000n;
-        let finalOut = guaranteedSold;
-        let hopCount = 2;
+        const sold = await quoteVenue(client, args.chainId, args.sell, args.tokenAddress as `0x${string}`, args.sellQuoteAddress as `0x${string}`, bought, args.blockNumber);
+        let finalOut = sold;
         if (args.sellQuoteAddress.toLowerCase() !== args.buyQuoteAddress.toLowerCase()) {
           const i = THREE_POOL_COINS.findIndex((coin) => coin.toLowerCase() === args.sellQuoteAddress.toLowerCase());
           const j = THREE_POOL_COINS.findIndex((coin) => coin.toLowerCase() === args.buyQuoteAddress.toLowerCase());
           if (args.chainId !== 1 || i < 0 || j < 0) return null;
           activeAdapter = "curve-3pool";
-          const closingQuote = await readAtBlock(client, { address: ETHEREUM_3POOL, abi: curveAbi, functionName: "get_dy", args: [BigInt(i), BigInt(j), guaranteedSold] }, args.blockNumber);
-          finalOut = closingQuote * BigInt(10_000 - args.slippageBps) / 10_000n;
-          hopCount++;
+          finalOut = await readAtBlock(client, { address: ETHEREUM_3POOL, abi: curveAbi, functionName: "get_dy", args: [BigInt(i), BigInt(j), sold] }, args.blockNumber);
         }
         const premium = amountIn * premiumBps / 10_000n;
-        const guaranteedGross =
+        const gross =
           (Number(finalOut - amountIn) / 10 ** args.buyQuoteDecimals) *
           borrowTokenPriceUsd;
-        const slippage = borrowUsd * (1 - Math.pow(1 - args.slippageBps / 10_000, hopCount));
-        // `finalOut` is already discounted at every hop. Report gross before the
-        // configured safety buffer so the displayed equation remains exact:
-        // gross - slippage - flash premium - gas = executable net.
-        const gross = guaranteedGross + slippage;
         const premiumUsd =
           (Number(premium) / 10 ** args.buyQuoteDecimals) *
           borrowTokenPriceUsd;
@@ -460,7 +450,11 @@ export async function quoteClosedRoute(client: any, args: { chainId: number; tok
           (Number(finalOut - amountIn - premium) /
             10 ** args.buyQuoteDecimals) *
           borrowTokenPriceUsd;
-        const quote = { borrowUsd, grossProfitUsd: gross, flashLoanFeeUsd: premiumUsd, slippageUsd: slippage, netBeforeGasUsd };
+        // A router's slippage tolerance is a revert boundary, not a fee and
+        // not an expected loss. Exact quotes already include pool fees and
+        // price impact. ArbExecutor independently requires repayment plus a
+        // positive minProfit, so stale/worse execution reverts atomically.
+        const quote = { borrowUsd, grossProfitUsd: gross, flashLoanFeeUsd: premiumUsd, slippageUsd: 0, netBeforeGasUsd };
         return { value: quote.netBeforeGasUsd, result: quote };
       } catch (error) {
         recordQuoteFailure(failures, activeAdapter, error);
@@ -527,18 +521,18 @@ export async function quoteAtomicCycle(client: any, args: {
             amount,
             args.blockNumber,
           );
-          amount = quoted * BigInt(10_000 - args.slippageBps) / 10_000n;
+          amount = quoted;
         }
         const premium = amountIn * premiumBps / 10_000n;
         const unit = 10 ** args.borrowDecimals;
-        const conservativeSlippageUsd = borrowUsd * (1 - Math.pow(1 - args.slippageBps / 10_000, args.legs.length));
         const quote: ClosedRouteQuote = {
           borrowUsd,
           grossProfitUsd:
-            (Number(amount - amountIn) / unit) * borrowTokenPriceUsd +
-            conservativeSlippageUsd,
+            (Number(amount - amountIn) / unit) * borrowTokenPriceUsd,
           flashLoanFeeUsd: (Number(premium) / unit) * borrowTokenPriceUsd,
-          slippageUsd: conservativeSlippageUsd,
+          // Slippage tolerance remains encoded as the final swap's minOut in
+          // the executor. It must not be charged as a certain loss per hop.
+          slippageUsd: 0,
           netBeforeGasUsd:
             (Number(amount - amountIn - premium) / unit) * borrowTokenPriceUsd,
         };

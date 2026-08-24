@@ -52,61 +52,64 @@ export function hasSufficientGasBalance(
  */
 export async function getExecutionReadiness(
   chainClients: ChainClients,
+  chainIds?: ReadonlySet<number>,
 ): Promise<Map<number, ChainExecutionReadiness>> {
   const readiness = new Map<number, ChainExecutionReadiness>();
 
   await Promise.all(
-    [...chainClients.clients].map(async ([chainId, chain]) => {
-      const minimum = minimumGasBalance(chainId);
-      if (!chain.executorAddress) {
-        readiness.set(chainId, {
-          ready: false,
-          blockers: ["watch-only"],
-          gasBalance: null,
-          minimumGasBalance: minimum,
-        });
-        return;
-      }
+    [...chainClients.clients]
+      .filter(([chainId]) => !chainIds || chainIds.has(chainId))
+      .map(async ([chainId, chain]) => {
+        const minimum = minimumGasBalance(chainId);
+        if (!chain.executorAddress) {
+          readiness.set(chainId, {
+            ready: false,
+            blockers: ["watch-only"],
+            gasBalance: null,
+            minimumGasBalance: minimum,
+          });
+          return;
+        }
 
-      try {
-        const [bytecode, owner, paused, gasBalance] = await Promise.all([
-          chain.publicClient.getBytecode({ address: chain.executorAddress }),
-          chain.publicClient.readContract({
-            address: chain.executorAddress,
-            abi: arbExecutorAbi,
-            functionName: "owner",
-          }),
-          chain.publicClient.readContract({
-            address: chain.executorAddress,
-            abi: arbExecutorAbi,
-            functionName: "paused",
-          }),
-          chain.publicClient.getBalance({
-            address: chainClients.account.address,
-          }),
-        ]);
-        const blockers: ChainExecutionReadiness["blockers"] = [];
-        if (!bytecode || bytecode === "0x") blockers.push("no-bytecode");
-        if (getAddress(owner) !== getAddress(chainClients.account.address))
-          blockers.push("wrong-owner");
-        if (paused) blockers.push("paused");
-        if (!hasSufficientGasBalance(gasBalance, minimum))
-          blockers.push("insufficient-gas");
-        readiness.set(chainId, {
-          ready: blockers.length === 0,
-          blockers,
-          gasBalance,
-          minimumGasBalance: minimum,
-        });
-      } catch {
-        readiness.set(chainId, {
-          ready: false,
-          blockers: ["rpc-unavailable"],
-          gasBalance: null,
-          minimumGasBalance: minimum,
-        });
-      }
-    }),
+        try {
+          const [bytecode, owner, paused, gasBalance] = await Promise.all([
+            chain.publicClient.getBytecode({ address: chain.executorAddress }),
+            chain.publicClient.readContract({
+              address: chain.executorAddress,
+              abi: arbExecutorAbi,
+              functionName: "owner",
+            }),
+            chain.publicClient.readContract({
+              address: chain.executorAddress,
+              abi: arbExecutorAbi,
+              functionName: "paused",
+            }),
+            chain.publicClient.getBalance({
+              address: chainClients.account.address,
+            }),
+          ]);
+          const blockers: ChainExecutionReadiness["blockers"] = [];
+          if (!bytecode || bytecode === "0x") blockers.push("no-bytecode");
+          if (getAddress(owner) !== getAddress(chainClients.account.address))
+            blockers.push("wrong-owner");
+          if (paused) blockers.push("paused");
+          if (!hasSufficientGasBalance(gasBalance, minimum))
+            blockers.push("insufficient-gas");
+          readiness.set(chainId, {
+            ready: blockers.length === 0,
+            blockers,
+            gasBalance,
+            minimumGasBalance: minimum,
+          });
+        } catch {
+          readiness.set(chainId, {
+            ready: false,
+            blockers: ["rpc-unavailable"],
+            gasBalance: null,
+            minimumGasBalance: minimum,
+          });
+        }
+      }),
   );
 
   return readiness;

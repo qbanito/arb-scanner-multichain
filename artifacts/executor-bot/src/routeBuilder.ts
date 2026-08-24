@@ -70,11 +70,13 @@ export type RouteResult = { ok: true; route: BuiltRoute } | { ok: false; reason:
 /// a skip reason instead of throwing for anything this bot doesn't yet know
 /// how to route safely — see dexRegistry.ts and README.md for coverage.
 ///
-/// Both legs' `amountOutMinimum` come from a real on-chain quote — not from
-/// the scanner's USD price estimate, which isn't precise enough to size an
-/// actual swap. Leg 2's `amountIn` is deliberately set to leg 1's
-/// *discounted* (slippage-adjusted) minimum, so the sell leg can never try
-/// to spend more than the buy leg is guaranteed to have delivered.
+/// Every hop comes from a real on-chain quote — not from the scanner's USD
+/// price estimate, which isn't precise enough to size an actual swap.
+/// Intermediate hops require their quoted output and pass that exact quote
+/// to the next hop. If a stale pool produces less, a downstream exact-input
+/// call fails and the whole flash-loan transaction reverts. The configured
+/// slippage tolerance is therefore only applied to the final hop; it is a
+/// settlement guard, not a fictitious cost charged once per hop.
 export async function buildRoute(
   client: PublicClient,
   opportunity: ArbitrageOpportunity,
@@ -115,26 +117,27 @@ export async function buildRoute(
       tokenOut,
       amountIn,
       recipient: params.executorAddress,
-      slippageBps: params.slippageBps,
+      slippageBps: 0,
     });
     if (!buyHop) return { ok: false, reason: "unsupported-buy-venue" };
 
-    // Leg 2 spends exactly what leg 1 is guaranteed (by its own
-    // amountOutMinimum) to have produced — never the optimistic quote.
+    // The downstream exact-input call deliberately spends the same-block
+    // quote. A worse first fill cannot leak principal: it makes this call
+    // fail and ArbExecutor atomically reverts the entire flash loan.
     const sellHop = await buildHop(client, {
       dex: sellDex,
       chainId: opportunity.chainId,
       poolAddress: opportunity.sellVenue.pairAddress as `0x${string}`,
       tokenIn: tokenOut,
       tokenOut: sellQuoteAddress as `0x${string}`,
-      amountIn: buyHop.amountOutMinimum,
+      amountIn: buyHop.quotedOut,
       recipient: params.executorAddress,
-      slippageBps: params.slippageBps,
+      slippageBps: needsClosingHop ? 0 : params.slippageBps,
     });
     if (!sellHop) return { ok: false, reason: "unsupported-sell-venue" };
 
     let closingLegs: Leg[] = [];
-    let guaranteedFinalOut = sellHop.amountOutMinimum;
+    let quotedFinalOut = sellHop.quotedOut;
     if (needsClosingHop) {
       const curve = findCurvePool(opportunity.chainId, sellQuoteAddress as `0x${string}`, asset);
       if (!curve) return { ok: false, reason: "mismatched-quote-token" };
@@ -142,19 +145,23 @@ export async function buildRoute(
         address: curve.pool,
         abi: curvePoolAbi,
         functionName: "get_dy",
-        args: [BigInt(curve.i), BigInt(curve.j), sellHop.amountOutMinimum],
+        args: [BigInt(curve.i), BigInt(curve.j), sellHop.quotedOut],
       });
-      guaranteedFinalOut = closingQuote * BigInt(10_000 - params.slippageBps) / 10_000n;
+      quotedFinalOut = closingQuote;
+      const closingMinimum = amountOutMinimumForHop(
+        closingQuote,
+        params.slippageBps,
+      );
       closingLegs = [
-        { target: sellQuoteAddress as `0x${string}`, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [curve.pool, sellHop.amountOutMinimum] }) },
-        { target: curve.pool, data: encodeFunctionData({ abi: curvePoolAbi, functionName: "exchange", args: [BigInt(curve.i), BigInt(curve.j), sellHop.amountOutMinimum, guaranteedFinalOut] }) },
+        { target: sellQuoteAddress as `0x${string}`, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [curve.pool, sellHop.quotedOut] }) },
+        { target: curve.pool, data: encodeFunctionData({ abi: curvePoolAbi, functionName: "exchange", args: [BigInt(curve.i), BigInt(curve.j), sellHop.quotedOut, closingMinimum] }) },
       ];
     }
 
-    // Use every leg's guaranteed minimum, not its optimistic spot quote.
-    // This makes every downstream "net profit" gate conservative with
-    // respect to configured slippage on both legs.
-    const estimatedGrossProfit = guaranteedFinalOut - amountIn;
+    // This is the expected current-state output used to decide whether a
+    // full eth_call simulation is worthwhile. Settlement remains protected
+    // by the final hop's minOut and ArbExecutor's independent minProfit.
+    const estimatedGrossProfit = quotedFinalOut - amountIn;
 
     return {
       ok: true,
@@ -189,7 +196,7 @@ async function buildExplicitCycle(
   try {
     const legs: Leg[] = [];
     let currentAmount = amountIn;
-    for (const routeLeg of route) {
+    for (const [index, routeLeg] of route.entries()) {
       const dex = resolveDex(routeLeg.venue.dexId, routeLeg.venue.labels);
       if (!dex) return { ok: false, reason: "unsupported-route-leg" };
       const hop = await buildHop(client, {
@@ -200,11 +207,11 @@ async function buildExplicitCycle(
         tokenOut: routeLeg.tokenOutAddress as `0x${string}`,
         amountIn: currentAmount,
         recipient: params.executorAddress,
-        slippageBps: params.slippageBps,
+        slippageBps: index === route.length - 1 ? params.slippageBps : 0,
       });
       if (!hop) return { ok: false, reason: "unsupported-route-leg" };
       legs.push(...hop.legs);
-      currentAmount = hop.amountOutMinimum;
+      currentAmount = hop.quotedOut;
     }
 
     return {
@@ -379,7 +386,10 @@ async function buildHop(
   }
   if (quotedOut === null) return null;
 
-  const amountOutMinimum = (quotedOut * BigInt(10_000 - args.slippageBps)) / 10_000n;
+  const amountOutMinimum = amountOutMinimumForHop(
+    quotedOut,
+    args.slippageBps,
+  );
   const approveData = encodeFunctionData({
     abi: erc20Abi,
     functionName: "approve",
@@ -547,6 +557,19 @@ async function buildHop(
     amountOutMinimum,
     quotedOut,
   };
+}
+
+/**
+ * Converts a quote into the router's settlement floor. Callers pass zero bps
+ * for intermediate hops because the following exact-input leg requires the
+ * complete quote; only the final hop receives the configured tolerance.
+ */
+export function amountOutMinimumForHop(
+  quotedOut: bigint,
+  slippageBps: number,
+): bigint {
+  const boundedBps = Math.min(10_000, Math.max(0, Math.trunc(slippageBps)));
+  return (quotedOut * BigInt(10_000 - boundedBps)) / 10_000n;
 }
 
 async function quoteGenericCurve(

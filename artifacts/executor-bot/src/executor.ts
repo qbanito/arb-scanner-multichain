@@ -34,7 +34,7 @@ export async function runLoop(
   chainClients: ChainClients,
 ): Promise<never> {
   const limiter = new TradeLimiter(config.maxTradesPerHour);
-  const runtime = { readinessSignature: "" };
+  const runtime = { readinessSignatures: new Map<number, string>() };
 
   const wsChains = [...chainClients.clients.entries()]
     .filter(([, c]) => c.wsClient !== null)
@@ -44,7 +44,8 @@ export async function runLoop(
       liveExecution: config.enableLiveExecution,
       requireManualExecution: config.requireManualExecution,
       chains: Object.keys(config.chains).map(Number),
-      blockDrivenChains: wsChains,
+      blockDrivenChains: [...chainClients.clients.keys()],
+      websocketChains: wsChains,
       maxBorrowUsd: config.maxBorrowUsd,
       minProfitUsd: config.minProfitUsd,
       minProfitUsdByChain: config.minProfitUsdByChain,
@@ -62,47 +63,55 @@ export async function runLoop(
       : "executor-bot starting in dry-run mode — no transactions will be sent",
   );
 
-  // Guards against overlapping runs — a burst of blocks (or a block landing
-  // mid-tick) triggers a re-evaluation, not a second concurrent one. Also
-  // enforces a minimum gap between ticks: Arbitrum produces a block roughly
-  // every ~250ms, far faster than a single tick's RPC calls should be fired,
-  // and reacting to literally every block exhausted a free-tier RPC rate
-  // limit in practice (shared across this bot, the liquidation scanner, and
-  // the API server). This still reacts far faster than the old fixed 15s
-  // poll, just not faster than the RPC provider can actually sustain.
-  let ticking = false;
-  let lastTickAt = 0;
-  const runTickSafely = (trigger: string) => {
-    if (ticking) return;
-    if (Date.now() - lastTickAt < config.minTickGapMs) return;
-    ticking = true;
-    lastTickAt = Date.now();
-    tick(config, chainClients, limiter, runtime)
+  // Each chain owns its lock and cadence. A slow Ethereum quote cycle must
+  // never suppress a BNB or Arbitrum block trigger; transactions on distinct
+  // chains also have independent nonce domains. Same-chain overlap remains
+  // forbidden so one account can never race itself for a nonce.
+  const ticking = new Set<number>();
+  const lastTickAt = new Map<number, number>();
+  const runTickSafely = (chainId: number, trigger: string) => {
+    if (ticking.has(chainId)) return;
+    if (Date.now() - (lastTickAt.get(chainId) ?? 0) < config.minTickGapMs)
+      return;
+    ticking.add(chainId);
+    lastTickAt.set(chainId, Date.now());
+    tick(config, chainClients, limiter, runtime, chainId)
       .catch((err) =>
-        logger.error({ err, trigger }, "unhandled error in poll cycle"),
+        logger.error(
+          { err, trigger, chainId },
+          "unhandled error in chain poll cycle",
+        ),
       )
       .finally(() => {
-        ticking = false;
+        ticking.delete(chainId);
       });
   };
 
-  // Block-driven: react the instant a new block lands on any WebSocket-
-  // connected chain, instead of waiting for the next timer tick. Falls back
-  // silently to timer-only polling for chains without a derivable wss:// URL
-  // (see chains.ts).
+  // Block-driven: WebSocket chains subscribe directly. HTTP-only chains use
+  // viem's block-number watcher, which polls only the lightweight head RPC;
+  // the fixed interval below remains a heartbeat if either watcher fails.
   for (const [chainId, entry] of chainClients.clients) {
-    if (!entry.wsClient) continue;
-    entry.wsClient.watchBlocks({
-      onBlock: () => runTickSafely(`block:${chainId}`),
-      onError: (err) =>
-        logger.warn({ err, chainId }, "block subscription error"),
-    });
+    if (entry.wsClient) {
+      entry.wsClient.watchBlocks({
+        onBlock: () => runTickSafely(chainId, `block:${chainId}:ws`),
+        onError: (err) =>
+          logger.warn({ err, chainId }, "block subscription error"),
+      });
+    } else {
+      entry.publicClient.watchBlockNumber({
+        pollingInterval: Math.max(1_000, config.minTickGapMs),
+        onBlockNumber: () => runTickSafely(chainId, `block:${chainId}:http`),
+        onError: (err) =>
+          logger.warn({ err, chainId }, "block polling watcher error"),
+      });
+    }
   }
 
   if (config.enableMevShareHints) {
     void watchMevShareHints(config.mevShareStreamUrl, (hint) => {
       logger.debug({ hash: hint.hash }, "MEV-Share hint received");
-      runTickSafely(`mev-share:${hint.hash}`);
+      if (chainClients.clients.has(1))
+        runTickSafely(1, `mev-share:${hint.hash}`);
     }).catch((err) =>
       logger.error({ err }, "MEV-Share watcher stopped unexpectedly"),
     );
@@ -112,7 +121,8 @@ export async function runLoop(
   // WebSocket subscription is down, and bounds the worst-case reaction time
   // to `pollIntervalMs` regardless.
   for (;;) {
-    runTickSafely("timer");
+    for (const chainId of chainClients.clients.keys())
+      runTickSafely(chainId, "timer");
     await sleep(config.pollIntervalMs);
   }
 }
@@ -134,17 +144,20 @@ const CHAIN_QUERY_NAMES: Record<number, string> = {
   534352: "scroll",
 };
 
-type RuntimeState = { readinessSignature: string };
+type RuntimeState = { readinessSignatures: Map<number, string> };
 
 async function tick(
   config: Config,
   chainClients: ChainClients,
   limiter: TradeLimiter,
   runtime: RuntimeState,
+  chainId: number,
 ): Promise<void> {
-  let liveReadyChains: Set<number> | null = null;
   if (config.enableLiveExecution) {
-    const readiness = await getExecutionReadiness(chainClients);
+    const readiness = await getExecutionReadiness(
+      chainClients,
+      new Set([chainId]),
+    );
     const statuses = [...readiness]
       .map(([chainId, state]) => ({
         chainId,
@@ -161,8 +174,8 @@ async function tick(
         blockers,
       })),
     );
-    if (signature !== runtime.readinessSignature) {
-      runtime.readinessSignature = signature;
+    if (signature !== runtime.readinessSignatures.get(chainId)) {
+      runtime.readinessSignatures.set(chainId, signature);
       const readyCount = statuses.filter((status) => status.ready).length;
       const log =
         readyCount > 0 ? logger.info.bind(logger) : logger.warn.bind(logger);
@@ -173,31 +186,20 @@ async function tick(
           : "live execution standing by — fund or repair at least one executor; no transaction can be sent",
       );
     }
-    liveReadyChains = new Set(
-      statuses.filter((status) => status.ready).map((status) => status.chainId),
-    );
-    if (liveReadyChains.size === 0) return;
+    if (!statuses.some((status) => status.ready)) return;
   }
 
-  const chainIds = [...chainClients.clients.keys()].filter(
-    (chainId) => liveReadyChains === null || liveReadyChains.has(chainId),
-  );
-  const [perChain, requested] = await Promise.all([
-    Promise.all(
-      chainIds.map((chainId) =>
-        fetchOpportunities(
-          config.apiBaseUrl,
-          CHAIN_QUERY_NAMES[chainId] ?? "all",
-          0,
-          config.scannerRequestTimeoutMs,
-        ),
-      ),
+  const [opportunities, requested] = await Promise.all([
+    fetchOpportunities(
+      config.apiBaseUrl,
+      CHAIN_QUERY_NAMES[chainId] ?? "all",
+      0,
+      config.scannerRequestTimeoutMs,
     ),
     config.requireManualExecution
       ? fetchExecutionRequests(config.apiBaseUrl)
       : Promise.resolve(new Set<string>()),
   ]);
-  const opportunities = perChain.flat();
   const candidates = opportunities
     .filter(
       (opp) =>

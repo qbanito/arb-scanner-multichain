@@ -1094,6 +1094,54 @@ const BORROW_ASSET_USD_FEEDS: Partial<
     // Chainlink BNB/USD, also used by the executor's independent sizing gate.
     [BSC_WBNB]: "0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE",
   },
+  42161: {
+    "0x82af49447d8a07e3bd95bd0d56f35241523fbab1":
+      "0xbD41b1548a5A06544cBcf87c0c54864312842C00",
+  },
+  10: {
+    "0x4200000000000000000000000000000000000006":
+      "0x13e3Ee699D1909E989722E753853AE30b17e08c5",
+  },
+  137: {
+    "0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270":
+      "0xAB594600376Ec9fD91F8e885dADF0CE036862dE0",
+  },
+  8453: {
+    "0x4200000000000000000000000000000000000006":
+      "0x9dA00D23465282005DB222a441a663eE7B9dfCc8",
+  },
+  43114: {
+    "0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7":
+      "0x0A77230d17318075983913bC2145DB16C7366156",
+  },
+  42220: {
+    "0x471ece3750da237f93b8e339c536989b8978a438":
+      "0x0568fD19986748cEfF3301e55c0eb1E729E0Ab7e",
+  },
+  59144: {
+    "0xe5d7c2a44ffddf6b295a15c148167daaaf5cf34f":
+      "0x3c6Cd9Cc7c7a4c2Cf5a82734CD249D7D593354dA",
+  },
+  5000: {
+    "0x78c1b0c915c4faa5fffa6cabf0219da63d7f4cb8":
+      "0xD97F20bEbeD74e8144134C4b148fE93417dd0F96",
+  },
+  534352: {
+    "0x5300000000000000000000000000000000000004":
+      "0x6bF14CB0A831078629D993FDeBcB182b21A8774C",
+  },
+  146: {
+    "0x039e2fb66102314ce7b64ce5ce3e5183bc94ad38":
+      "0xc76dFb89fF298145b417d221B2c747d84952e01d",
+  },
+  324: {
+    "0x5aea5775959fbc2557cc8789bc1bf90a239d9a91":
+      "0x6D41d1dc818112880b40e26BD6FD347E41008eDA",
+  },
+  1868: {
+    "0x4200000000000000000000000000000000000006":
+      "0x291cF980BA12505D65ee01BDe0882F1d5e533525",
+  },
 };
 const CHAINLINK_FEED_ABI = [
   {
@@ -1311,6 +1359,12 @@ const GLOBAL_CHAIN_WAIT_MS = boundedEnvInt(
   3_000,
   60_000,
 );
+const EXACT_QUOTE_TIMEOUT_MS = boundedEnvInt(
+  "SCANNER_EXACT_QUOTE_TIMEOUT_MS",
+  8_000,
+  2_000,
+  30_000,
+);
 const rpcPrimaryDisabledUntil = new Map<ChainId, number>();
 const quoteScheduler = new FairQuoteScheduler();
 const quoteFailureBackoff = new Map<
@@ -1369,7 +1423,19 @@ const GAS_COST_USD: Record<
 const ETHEREUM_WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
 const NATIVE_GAS_ASSET: Partial<Record<ChainId, string>> = {
   ethereum: ETHEREUM_WETH,
+  arbitrum: "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+  optimism: "0x4200000000000000000000000000000000000006",
+  polygon: "0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270",
+  base: "0x4200000000000000000000000000000000000006",
+  avalanche: "0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7",
   bsc: BSC_WBNB,
+  celo: "0x471ece3750da237f93b8e339c536989b8978a438",
+  linea: "0xe5d7c2a44ffddf6b295a15c148167daaaf5cf34f",
+  mantle: "0x78c1b0c915c4faa5fffa6cabf0219da63d7f4cb8",
+  scroll: "0x5300000000000000000000000000000000000004",
+  sonic: "0x039e2fb66102314ce7b64ce5ce3e5183bc94ad38",
+  zksync: "0x5aea5775959fbc2557cc8789bc1bf90a239d9a91",
+  soneium: "0x4200000000000000000000000000000000000006",
 };
 const GAS_UNITS_BY_HOPS = { twoPool: 350_000, threePool: 440_000, extraHop: 100_000 };
 const GAS_SCREENING_HEADROOM = 1.2;
@@ -3202,8 +3268,10 @@ function closeDirectOpportunities(
     const estimatedGrossUsd =
       (recommendedBorrowUsd * estimatedGrossBps) / 10_000;
     const estimatedFlashLoanFeeUsd = recommendedBorrowUsd * 0.0005;
-    const estimatedSlippageUsd =
-      recommendedBorrowUsd * (1 - Math.pow(1 - 20 / 10_000, routeLegs.length));
+    // Pool fees are already included in `estimatedGrossBps`. A configured
+    // router minOut is a revert boundary, not a loss that should be charged
+    // once per route leg before the exact quote even runs.
+    const estimatedSlippageUsd = 0;
     const estimatedNetUsd =
       estimatedGrossUsd -
       estimatedFlashLoanFeeUsd -
@@ -3294,6 +3362,33 @@ function withinGlobalScanBudget<T>(
   });
 }
 
+function withinExactQuoteBudget<T>(
+  promise: Promise<T>,
+  opportunityId: string,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () =>
+        reject(
+          new Error(
+            `Exact quote ${opportunityId} exceeded ${EXACT_QUOTE_TIMEOUT_MS}ms`,
+          ),
+        ),
+      EXACT_QUOTE_TIMEOUT_MS,
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
 function preliminaryNetScore(chain: ChainId, candidate: Opportunity): number {
   if (!candidate.routeLegs?.length) {
     const crossProtocol =
@@ -3305,7 +3400,11 @@ function preliminaryNetScore(chain: ChainId, candidate: Opportunity): number {
     return candidate.profit.netProfitUsd + diversityBonus;
   }
   const borrow = candidate.profit.recommendedBorrowUsd;
-  const conservativeCostBps = 5 + candidate.routeLegs.length * 20;
+  // `spreadBps` for graph cycles is already fee-adjusted. Do not subtract the
+  // executor's 20 bps minOut tolerance per hop: that tolerance does not move
+  // funds and a stale route reverts. Keep only a small quote-staleness reserve
+  // for ranking; exact pool quotes and gas decide executability below.
+  const conservativeCostBps = 5;
   const protocolCount = new Set(
     candidate.routeLegs.map((leg) => leg.venue.dexId.toLowerCase()),
   ).size;
@@ -3484,8 +3583,10 @@ async function scan(chain: "all" | ChainId) {
         // a bounded live-quote budget so a fourteen-chain scan remains responsive
         // on public RPCs while still validating the strongest candidates exactly.
         const defaultExactQuoteBudget =
-          item === "ethereum" || item === "arbitrum"
+          item === "ethereum"
             ? SEARCH_LIMITS.maxExactQuotes
+            : item === "arbitrum"
+              ? Math.min(32, SEARCH_LIMITS.maxExactQuotes)
             : item === "bsc"
               ? Math.min(32, SEARCH_LIMITS.maxExactQuotes)
               : Math.min(12, SEARCH_LIMITS.maxExactQuotes);
@@ -3701,7 +3802,7 @@ async function scan(chain: "all" | ChainId) {
                   .getBlockNumber({ cacheTime: 0 })
                   .catch(() => BigInt(opportunity.blockNumber));
                 const quote = borrowTokenPriceUsd
-                  ? await quoteAtomicCycle(CHAIN_CLIENTS[item], {
+                  ? await withinExactQuoteBudget(quoteAtomicCycle(CHAIN_CLIENTS[item], {
                       chainId: opportunity.chainId,
                       borrowDecimals:
                         opportunity.routeLegs[0]!.tokenInDecimals,
@@ -3724,7 +3825,7 @@ async function scan(chain: "all" | ChainId) {
                           ...diagnostic,
                         });
                       },
-                    })
+                    }), opportunity.id)
                   : null;
                 const gasCostUsd =
                   gasByHops.get(opportunity.routeLegs.length) ??
@@ -3831,7 +3932,7 @@ async function scan(chain: "all" | ChainId) {
                 .getBlockNumber({ cacheTime: 0 })
                 .catch(() => BigInt(opportunity.blockNumber));
               const quote = borrowTokenPriceUsd
-                ? await quoteClosedRoute(CHAIN_CLIENTS[item], {
+                ? await withinExactQuoteBudget(quoteClosedRoute(CHAIN_CLIENTS[item], {
                     chainId: opportunity.chainId,
                     tokenAddress: opportunity.tokenAddress,
                     tokenDecimals: opportunity.tokenDecimals,
@@ -3855,7 +3956,7 @@ async function scan(chain: "all" | ChainId) {
                         ...diagnostic,
                       });
                     },
-                  })
+                  }), opportunity.id)
                 : null;
               const gasCostUsd =
                 gasByHops.get(opportunity.routeLegs?.length ?? 2) ??

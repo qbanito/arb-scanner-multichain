@@ -2250,7 +2250,12 @@ function DetailDrawer({
                       ["Flash loan fee", -item.profit.flashLoanFeeUsd],
                       ["Gas cost", -item.profit.gasCostUsd],
                       ["DEX fees", -item.profit.dexFeesUsd],
-                      ["Slippage", -item.profit.slippageUsd],
+                      [
+                        item.quoteStatus === "quoted"
+                          ? "Slippage charged"
+                          : "Slippage / price impact",
+                        -item.profit.slippageUsd,
+                      ],
                     ] as const
                   ).map(([label, value]) => (
                     <div
@@ -2270,6 +2275,13 @@ function DetailDrawer({
                       </b>
                     </div>
                   ))}
+                  {item.quoteStatus === "quoted" && (
+                    <p className="mt-2 font-mono-tight text-[9px] leading-relaxed text-muted-foreground">
+                      Slippage tolerance is an atomic revert guard, not a fee
+                      charged in advance. Exact DEX quotes already include pool
+                      fees and current price impact.
+                    </p>
+                  )}
                   <div className="mt-3.5 flex justify-between border-t border-border pt-3.5 text-foreground">
                     <span className="font-mono-tight text-[11px]">
                       Executable net profit
