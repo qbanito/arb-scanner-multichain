@@ -28,7 +28,7 @@ command = "true"
 
 [[redirects]]
 from = "/api/*"
-to = "http://98.83.220.41:8080/api/:splat"
+to = "https://arb-scanner-api.onrender.com/api/:splat"
 status = 200.0
 force = true
 
