@@ -320,6 +320,54 @@ function bestMarketPrices(chain: ChainId, markets: LiveMarket[]): Map<string, Ma
   return result;
 }
 
+function median(values: number[]): number {
+  const ordered = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(ordered.length / 2);
+  return ordered.length % 2 === 0
+    ? (ordered[middle - 1]! + ordered[middle]!) / 2
+    : ordered[middle]!;
+}
+
+// A malformed or thin pool can report a wildly wrong USD conversion. Require
+// cross-chain corroboration before letting a price dislocation become an
+// Across candidate; bridge fees cannot make a 200,000x spot error executable.
+function sanitizeCrossChainPrices(
+  raw: Map<ChainId, Map<string, MarketPrice>>,
+): Map<ChainId, Map<string, MarketPrice>> {
+  const byToken = new Map<string, number[]>();
+  for (const markets of raw.values()) {
+    for (const [token, market] of markets) {
+      const values = byToken.get(token) ?? [];
+      values.push(market.priceUsd);
+      byToken.set(token, values);
+    }
+  }
+  const maxDeviation = envNumber("ACROSS_MAX_REFERENCE_DEVIATION_BPS", 1_000, 100, 5_000) / 10_000;
+  const reference = new Map<string, { price: number; corroborated: boolean }>();
+  for (const [token, values] of byToken) {
+    const minimum = Math.min(...values);
+    const maximum = Math.max(...values);
+    const price = median(values);
+    const corroborated = values.length >= 3 || maximum / minimum <= 1 + maxDeviation;
+    reference.set(token, { price, corroborated });
+  }
+  return new Map(
+    [...raw.entries()].map(([chain, markets]) => [
+      chain,
+      new Map(
+        [...markets.entries()].filter(([token, market]) => {
+          const ref = reference.get(token);
+          return Boolean(
+            ref &&
+              ref.corroborated &&
+              Math.abs(market.priceUsd / ref.price - 1) <= maxDeviation,
+          );
+        }),
+      ),
+    ]),
+  );
+}
+
 function scanChains(): ChainId[] {
   const config = acrossConfig();
   const allowed = config.allowedChainIds;
@@ -418,9 +466,9 @@ export async function scanAcrossOpportunities(force = false): Promise<AcrossOppo
       const markets = acrossMarketCache.get(chain);
       return markets ? [{ chain, markets }] : [];
     });
-    const prices = new Map<ChainId, Map<string, MarketPrice>>(
+    const prices = sanitizeCrossChainPrices(new Map<ChainId, Map<string, MarketPrice>>(
       successful.map(({ chain, markets }) => [chain, bestMarketPrices(chain, markets)]),
-    );
+    ));
     const candidates: Array<{
       token: string;
       origin: ChainId;

@@ -1148,6 +1148,14 @@ function AcrossMission({
             Continuous cross-chain scan waiting for: {snapshot.configurationMissing.join(", ")}
           </div>
         ) : null}
+        {snapshot ? (
+          <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl border border-border bg-card/30 px-4 py-3 font-mono-tight text-[10px] text-muted-foreground sm:grid-cols-4">
+            <span>Scanner <b className={snapshot.continuous ? "text-accent" : "text-warning"}>{snapshot.continuous ? "running" : "waiting"}</b></span>
+            <span>Networks <b className="text-foreground">{snapshot.chainsScanned.length}/{data?.allowedChainIds.length ?? 0}</b></span>
+            <span>Quotes <b className="text-foreground">{snapshot.opportunities.length}</b></span>
+            <span>Failures <b className={snapshot.quoteFailures ? "text-warning" : "text-accent"}>{snapshot.quoteFailures}</b></span>
+          </div>
+        ) : null}
         {snapshot?.opportunities.length ? (
           <div className="mt-3 overflow-x-auto rounded-2xl border border-border bg-card/40">
             <table className="w-full min-w-[760px] text-left font-mono-tight text-[10px]">
@@ -1177,6 +1185,10 @@ function AcrossMission({
                 ))}
               </tbody>
             </table>
+          </div>
+        ) : snapshot && !snapshot.configurationMissing.length ? (
+          <div className="mt-3 rounded-xl border border-border bg-card/30 px-4 py-4 font-mono-tight text-[10px] text-muted-foreground">
+            No corroborated cross-chain route yet. The relay is continuing to scan and will populate this table after an Across quote passes price validation.
           </div>
         ) : null}
       </DataState>
