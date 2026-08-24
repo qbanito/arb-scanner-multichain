@@ -1138,6 +1138,34 @@ const BSC_MEME_PRIORITY_SYMBOLS = new Set([
 ]);
 const BSC_MEME_MIN_POOL_LIQUIDITY_USD = 100_000;
 const BSC_MEME_MIN_ROUTE_VOLUME_24H_USD = 250_000;
+// Dynamic discovery intentionally has the same minimum quality bars as the
+// curated meme routes. It widens the search when BSC liquidity migrates to a
+// new token, without treating every freshly-created low-liquidity pool as an
+// execution candidate.
+const BSC_HOT_MEME_DISCOVERY_LIMIT = boundedEnvInt(
+  "BSC_HOT_MEME_DISCOVERY_LIMIT",
+  8,
+  0,
+  20,
+);
+const BSC_HOT_MEME_MIN_POOL_LIQUIDITY_USD = boundedEnvInt(
+  "BSC_HOT_MEME_MIN_POOL_LIQUIDITY_USD",
+  BSC_MEME_MIN_POOL_LIQUIDITY_USD,
+  25_000,
+  5_000_000,
+);
+const BSC_HOT_MEME_MIN_POOL_VOLUME_24H_USD = boundedEnvInt(
+  "BSC_HOT_MEME_MIN_POOL_VOLUME_24H_USD",
+  BSC_MEME_MIN_ROUTE_VOLUME_24H_USD,
+  0,
+  250_000_000,
+);
+// This only enables monitoring and exact quoting. An address discovered from
+// an indexer is never an execution authorization: ArbExecutor's on-chain
+// target allow-list remains the final, fail-closed gate.
+const BSC_HOT_MEME_DISCOVERY_ENABLED =
+  process.env["BSC_HOT_MEME_DISCOVERY_ENABLED"] !== "false";
+const activeBscHotMemeAddresses = new Set<string>();
 
 const BSC_PRIORITY_ROUTE_SYMBOLS = [
   ...BSC_CORE_PRIORITY_ROUTE_SYMBOLS,
@@ -1897,6 +1925,79 @@ function isNonExecutableRouteToken(chain: ChainId, address: string): boolean {
   return NON_EXECUTABLE_ROUTE_TOKENS[chain]?.has(address.toLowerCase()) ?? false;
 }
 
+type DynamicBscToken = {
+  address: `0x${string}`;
+  symbol: string;
+  score: number;
+};
+
+/**
+ * Finds unknown BSC assets that currently have unusually deep, high-turnover
+ * liquidity directly against a settlement asset. The source pairs are already
+ * fetched for the static WBNB/USDT/USDC markets, so this adds no broad
+ * unauthenticated token-list request. Each selected asset still needs a full
+ * on-chain decimals read and a complete pair catalog before it reaches the
+ * route graph.
+ */
+export function selectDynamicBscHotTokens(
+  pairs: DexPair[],
+  knownAddresses: ReadonlySet<string>,
+): DynamicBscToken[] {
+  if (!BSC_HOT_MEME_DISCOVERY_ENABLED || BSC_HOT_MEME_DISCOVERY_LIMIT === 0)
+    return [];
+
+  const selected = new Map<string, DynamicBscToken>();
+  for (const pair of pairs) {
+    const liquidityUsd = Math.max(0, Number(pair.liquidity?.usd ?? 0));
+    const volume24hUsd = Math.max(0, Number(pair.volume?.h24 ?? 0));
+    if (
+      liquidityUsd < BSC_HOT_MEME_MIN_POOL_LIQUIDITY_USD ||
+      volume24hUsd < BSC_HOT_MEME_MIN_POOL_VOLUME_24H_USD
+    )
+      continue;
+
+    const base = pair.baseToken;
+    const quote = pair.quoteToken;
+    const baseAddress = base?.address;
+    const quoteAddress = quote?.address;
+    if (!validTokenAddress(baseAddress) || !validTokenAddress(quoteAddress))
+      continue;
+    const baseIsSettlement =
+      baseAddress.toLowerCase() === BSC_WBNB ||
+      isStableQuote(RPCS.bsc.chainId, baseAddress);
+    const quoteIsSettlement =
+      quoteAddress.toLowerCase() === BSC_WBNB ||
+      isStableQuote(RPCS.bsc.chainId, quoteAddress);
+    // A token must trade directly against WBNB or a known stable asset. That
+    // makes it possible for graph discovery to close a real cycle, rather than
+    // adding disconnected hype pairs to the scanner.
+    if (baseIsSettlement === quoteIsSettlement) continue;
+
+    const token = baseIsSettlement ? quote : base;
+    const tokenAddress = baseIsSettlement ? quoteAddress : baseAddress;
+    const address = tokenAddress.toLowerCase();
+    if (
+      knownAddresses.has(address) ||
+      isNonExecutableRouteToken("bsc", address)
+    )
+      continue;
+    const symbol =
+      (token?.symbol ?? "TOKEN").replace(/[^\w.\-]/g, "").slice(0, 24) ||
+      "TOKEN";
+    // Liquidity prevents a tiny pool with artificial turnover from winning;
+    // volume rewards the pools where price dislocations are most likely to
+    // appear. Keep the best observation if the token trades on several DEXes.
+    const score = liquidityUsd * Math.log1p(volume24hUsd / 25_000);
+    const previous = selected.get(address);
+    if (!previous || score > previous.score)
+      selected.set(address, { address: tokenAddress, symbol, score });
+  }
+
+  return [...selected.values()]
+    .sort((left, right) => right.score - left.score)
+    .slice(0, BSC_HOT_MEME_DISCOVERY_LIMIT);
+}
+
 async function executorAllowsRouteTokens(
   chain: ChainId,
   addresses: string[],
@@ -2048,6 +2149,23 @@ export async function liveMarkets(chain: ChainId): Promise<LiveMarket[]> {
       const knownAddresses = new Set(
         definitions.map(({ address }) => address.toLowerCase()),
       );
+      // BSC meme liquidity moves rapidly. Start with assets already observed
+      // against WBNB/stables in the normal seed catalogs, then retrieve their
+      // complete pool sets so they can only form closed, cross-pool routes.
+      // Unknown addresses remain monitoring/quote-only unless the deployed
+      // executor independently authorizes every swap target.
+      const dynamicBscTokens =
+        chain === "bsc"
+          ? selectDynamicBscHotTokens(
+              markets.flatMap((market) => market.pairs),
+              knownAddresses,
+            )
+          : [];
+      if (chain === "bsc") {
+        activeBscHotMemeAddresses.clear();
+        for (const token of dynamicBscTokens)
+          activeBscHotMemeAddresses.add(token.address.toLowerCase());
+      }
       const frontier = new Map<
         string,
         { address: `0x${string}`; symbol: string; score: number }
@@ -2084,11 +2202,23 @@ export async function liveMarkets(chain: ChainId): Promise<LiveMarket[]> {
       const selectedFrontier = [...frontier.values()]
         .sort((a, b) => b.score - a.score)
         .slice(0, expansionLimit);
+      const selectedDynamicAddresses = new Set(
+        dynamicBscTokens.map((token) => token.address.toLowerCase()),
+      );
+      // Dynamic BSC assets receive a separate, bounded intake allocation. Do
+      // not let the generic frontier crowd them out, but do not fetch a token
+      // twice when it qualifies through both paths.
+      const discoveredCandidates = [
+        ...dynamicBscTokens,
+        ...selectedFrontier.filter(
+          (token) => !selectedDynamicAddresses.has(token.address.toLowerCase()),
+        ),
+      ];
       const requestedAddresses = new Set([
         ...knownAddresses,
-        ...selectedFrontier.map(({ address }) => address.toLowerCase()),
+        ...discoveredCandidates.map(({ address }) => address.toLowerCase()),
       ]);
-      const expandedTokens = await readTokenDecimals(chain, selectedFrontier);
+      const expandedTokens = await readTokenDecimals(chain, discoveredCandidates);
       for (let offset = 0; offset < expandedTokens.length; offset += 4) {
         const batch = await Promise.allSettled(
           expandedTokens.slice(offset, offset + 4).map(async (discovered) => {
@@ -2908,9 +3038,12 @@ function isHighPotentialBscMeme(candidate: Opportunity): boolean {
   if (candidate.chainId !== RPCS.bsc.chainId || !candidate.routeLegs?.length)
     return false;
   if (
-    !candidate.routeLegs.some((leg) =>
-      BSC_MEME_PRIORITY_SYMBOLS.has(leg.tokenInSymbol.toUpperCase()) ||
-      BSC_MEME_PRIORITY_SYMBOLS.has(leg.tokenOutSymbol.toUpperCase()),
+    !candidate.routeLegs.some(
+      (leg) =>
+        BSC_MEME_PRIORITY_SYMBOLS.has(leg.tokenInSymbol.toUpperCase()) ||
+        BSC_MEME_PRIORITY_SYMBOLS.has(leg.tokenOutSymbol.toUpperCase()) ||
+        activeBscHotMemeAddresses.has(leg.tokenInAddress.toLowerCase()) ||
+        activeBscHotMemeAddresses.has(leg.tokenOutAddress.toLowerCase()),
     )
   )
     return false;
