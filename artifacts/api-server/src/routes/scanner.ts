@@ -1099,11 +1099,15 @@ const NON_FLASH_BORROW_ASSETS: Partial<Record<ChainId, ReadonlySet<string>>> = {
 
 const BSC_CORE_PRIORITY_ROUTE_SYMBOLS = [
   ["USDT", "WBNB", "USDC", "USDT"],
+  ["USDT", "USDC", "WBNB", "USDT"],
   ["USDT", "BTCB", "WBNB", "USDT"],
+  ["USDT", "WBNB", "BTCB", "USDT"],
   ["USDT", "WETH", "WBNB", "USDT"],
+  ["USDT", "WBNB", "WETH", "USDT"],
   ["WBNB", "BTCB", "WETH", "WBNB"],
   ["USDT", "CAKE", "WBNB", "USDT"],
   ["USDC", "WBNB", "USDT", "USDC"],
+  ["USDT", "FDUSD", "WBNB", "USDT"],
   ["USDT", "USD1", "WBNB", "USDT"],
 ] as const;
 
