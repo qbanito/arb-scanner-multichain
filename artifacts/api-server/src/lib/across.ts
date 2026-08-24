@@ -3,7 +3,7 @@ import { formatUnits, parseUnits } from "viem";
 import { normalizeTrackedPair } from "./arbitrageEligibility";
 import {
   CHAIN_IDS,
-  liveMarkets,
+  pairsFor,
   RPCS,
   TOKEN_DEFINITIONS,
   tokenDecimals,
@@ -14,6 +14,7 @@ import {
 const DEFAULT_ACROSS_API_BASE_URL = "https://app.across.to/api";
 const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
 const HEX_RE = /^0x[a-fA-F0-9]*$/;
+const DEFAULT_ACROSS_SCAN_TOKENS = ["WETH", "USDC", "USDT", "DAI", "WBTC"];
 
 export type AcrossTradeType = "exactInput" | "minOutput";
 
@@ -325,6 +326,32 @@ function scanChains(): ChainId[] {
   return chains.slice(0, Math.floor(envNumber("ACROSS_MAX_CHAINS", 8, 2, CHAIN_IDS.length)));
 }
 
+function acrossScanTokens(): Set<string> {
+  const configured = process.env["ACROSS_SCAN_TOKENS"]
+    ?.split(",")
+    .map((value) => value.trim().toUpperCase())
+    .filter(Boolean);
+  return new Set(configured?.length ? configured : DEFAULT_ACROSS_SCAN_TOKENS);
+}
+
+async function lightMarkets(chain: ChainId): Promise<LiveMarket[]> {
+  const symbols = acrossScanTokens();
+  const definitions = TOKEN_DEFINITIONS.filter((token) =>
+    symbols.has(token.symbol.toUpperCase()) && Boolean(token.addresses[chain]),
+  );
+  const settled = await Promise.allSettled(
+    definitions.map(async (token) => ({
+      token,
+      pairs: await pairsFor(chain, token.addresses[chain]!),
+    })),
+  );
+  const markets = settled.flatMap((result) =>
+    result.status === "fulfilled" ? [result.value] : [],
+  );
+  if (markets.length === 0) throw new Error(`No Across seed markets returned for ${chain}`);
+  return markets;
+}
+
 function amountForPrice(amountUsd: number, priceUsd: number, decimals: number): bigint {
   const units = amountUsd / priceUsd;
   const precision = Math.min(decimals, 8);
@@ -353,6 +380,8 @@ async function withinChainScanBudget<T>(promise: Promise<T>, chain: ChainId): Pr
 
 let acrossSnapshot: { expiresAt: number; value: AcrossOpportunitySnapshot } | null = null;
 let acrossScanInFlight: Promise<AcrossOpportunitySnapshot> | null = null;
+const acrossMarketCache = new Map<ChainId, LiveMarket[]>();
+let acrossChainCursor = 0;
 
 export async function scanAcrossOpportunities(force = false): Promise<AcrossOpportunitySnapshot> {
   const config = acrossConfig();
@@ -370,13 +399,24 @@ export async function scanAcrossOpportunities(force = false): Promise<AcrossOppo
   const startedAt = new Date().toISOString();
 
   acrossScanInFlight = (async () => {
+    const perCycle = Math.floor(envNumber("ACROSS_CHAINS_PER_CYCLE", 1, 1, chains.length));
+    const cycleChains = chains.length <= perCycle
+      ? chains
+      : Array.from({ length: perCycle }, (_, offset) => chains[(acrossChainCursor + offset) % chains.length]!);
+    acrossChainCursor = chains.length ? (acrossChainCursor + cycleChains.length) % chains.length : 0;
     const settled = await Promise.allSettled(
-      chains.map(async (chain) => ({
+      cycleChains.map(async (chain) => ({
         chain,
-        markets: await withinChainScanBudget(liveMarkets(chain), chain),
+        markets: await withinChainScanBudget(lightMarkets(chain), chain),
       })),
     );
-    const successful = settled.flatMap((item) => item.status === "fulfilled" ? [item.value] : []);
+    settled.forEach((item) => {
+      if (item.status === "fulfilled") acrossMarketCache.set(item.value.chain, item.value.markets);
+    });
+    const successful = chains.flatMap((chain) => {
+      const markets = acrossMarketCache.get(chain);
+      return markets ? [{ chain, markets }] : [];
+    });
     const prices = new Map<ChainId, Map<string, MarketPrice>>(
       successful.map(({ chain, markets }) => [chain, bestMarketPrices(chain, markets)]),
     );

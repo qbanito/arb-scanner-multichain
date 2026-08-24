@@ -23,3 +23,7 @@ services:
         value: 1,10,56,137,324,1868,59144,8453,42161,43114
       - key: ACROSS_MAX_CHAINS
         value: 10
+      - key: ACROSS_CHAINS_PER_CYCLE
+        value: 1
+      - key: ACROSS_SCAN_TOKENS
+        value: WETH,USDC,USDT,DAI,WBTC

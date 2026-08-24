@@ -1803,7 +1803,7 @@ async function readTokenDecimals(
   }
 }
 
-async function pairsFor(chain: ChainId, address: string): Promise<DexPair[]> {
+export async function pairsFor(chain: ChainId, address: string): Promise<DexPair[]> {
   const raw = await cached(
     `pairs:${chain}:${address.toLowerCase()}`,
     async () => {
