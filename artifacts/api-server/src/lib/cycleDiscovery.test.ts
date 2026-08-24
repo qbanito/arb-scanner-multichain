@@ -8,6 +8,8 @@ const link: CycleToken = { address: "0x0000000000000000000000000000000000000003"
 const uni: CycleToken = { address: "0x0000000000000000000000000000000000000004", symbol: "UNI", decimals: 18 };
 const aave: CycleToken = { address: "0x0000000000000000000000000000000000000005", symbol: "AAVE", decimals: 18 };
 const crv: CycleToken = { address: "0x0000000000000000000000000000000000000006", symbol: "CRV", decimals: 18 };
+const wbnb: CycleToken = { address: "0x0000000000000000000000000000000000000007", symbol: "WBNB", decimals: 18 };
+const pepe: CycleToken = { address: "0x0000000000000000000000000000000000000008", symbol: "PEPE", decimals: 18 };
 
 function pool(id: number, base: CycleToken, quote: CycleToken, rate: number): CyclePool<string> {
   return { pairAddress: `0x${id.toString(16).padStart(40, "0")}`, liquidityUsd: 1_000_000, feeBps: 30, base, quote, baseToQuote: rate, venue: `venue-${id}` };
@@ -112,6 +114,30 @@ describe("findPrioritizedCycles", () => {
       findPrioritizedCycles([...pools, pool(3, link, usdc, 21)], template, new Set([weth.address])).length,
       0,
     );
+  });
+
+  it("requires two independent pools for a WBNB meme-token flash cycle", () => {
+    const template = [{ id: "bsc-meme-pepe", tokenAddresses: [wbnb.address, pepe.address, wbnb.address] }];
+    const onePool = pool(7, wbnb, pepe, 1_000_000);
+    const twoPoolCycle = findPrioritizedCycles(
+      [
+        onePool,
+        // The second pool has a genuine, fee-adjusted price difference.
+        pool(8, wbnb, pepe, 1_015_000),
+      ],
+      template,
+      new Set([wbnb.address]),
+      { minEstimatedBps: 1 },
+    );
+
+    assert.equal(
+      findPrioritizedCycles([onePool], template, new Set([wbnb.address]), { minEstimatedBps: 1 }).length,
+      0,
+    );
+    assert.equal(twoPoolCycle.length, 1);
+    assert.deepEqual(twoPoolCycle[0]!.legs.map((leg) => leg.tokenIn.symbol), ["WBNB", "PEPE"]);
+    assert.notEqual(twoPoolCycle[0]!.legs[0]!.poolAddress, twoPoolCycle[0]!.legs[1]!.poolAddress);
+    assert.equal(twoPoolCycle[0]!.legs.at(-1)!.tokenOut.symbol, "WBNB");
   });
 });
 

@@ -691,6 +691,15 @@ TOKEN_DEFINITIONS.push(
     addresses: { bsc: "0x25d887Ce7a35172C62FeBFD67a1856F20FaEbB00" },
   },
   {
+    // Verified directly from token0() on PancakeSwap V3 QUQ/USDT pool
+    // 0x9485ff32b6b4444c21d5abe4d9a2283d127075a2. This is intentionally
+    // an explicit address allow-list entry, never a ticker-only discovery.
+    symbol: "QUQ",
+    name: "quq",
+    decimals: 18,
+    addresses: { bsc: "0x4FA7C69a7B69f8bC48233024d546bC299d6b03bf" },
+  },
+  {
     symbol: "CELO",
     name: "Celo",
     decimals: 18,
@@ -1064,7 +1073,7 @@ const NON_FLASH_BORROW_ASSETS: Partial<Record<ChainId, ReadonlySet<string>>> = {
   bsc: new Set([BSC_USD1]),
 };
 
-const BSC_PRIORITY_ROUTE_SYMBOLS = [
+const BSC_CORE_PRIORITY_ROUTE_SYMBOLS = [
   ["USDT", "WBNB", "USDC", "USDT"],
   ["USDT", "BTCB", "WBNB", "USDT"],
   ["USDT", "WETH", "WBNB", "USDT"],
@@ -1072,6 +1081,25 @@ const BSC_PRIORITY_ROUTE_SYMBOLS = [
   ["USDT", "CAKE", "WBNB", "USDT"],
   ["USDC", "WBNB", "USDT", "USDC"],
   ["USDT", "USD1", "WBNB", "USDT"],
+] as const;
+
+// These are canonical BSC token addresses from the static allow-list above,
+// not symbols discovered from an indexer. A two-pool path deliberately uses
+// WBNB as both the flash asset and settlement asset: the same pool cannot be
+// selected twice, so this only considers a real cross-pool (for example
+// Pancake V2 -> V3) price difference and never a wash swap in one pool.
+const BSC_MEME_PRIORITY_ROUTE_SYMBOLS = [
+  ["WBNB", "PEPE", "WBNB"],
+  ["WBNB", "FLOKI", "WBNB"],
+  // QUQ is anchored to the high-volume Pancake V3 QUQ/USDT pool supplied by
+  // the operator. USDT is retained here because it is the pool's actual quote
+  // asset; a WBNB leg is not fabricated when no WBNB/QUQ pool is present.
+  ["USDT", "QUQ", "USDT"],
+] as const;
+
+const BSC_PRIORITY_ROUTE_SYMBOLS = [
+  ...BSC_CORE_PRIORITY_ROUTE_SYMBOLS,
+  ...BSC_MEME_PRIORITY_ROUTE_SYMBOLS,
 ] as const;
 
 function boundedEnvInt(
@@ -2507,9 +2535,11 @@ function buildGraphOpportunities(
       buyVenue: routeLegs[0]!.venue,
       sellVenue: routeLegs.at(-1)!.venue,
       routeKind:
-        cycle.legs.length === 3
-          ? ("triangular" as const)
-          : ("multi-hop" as const),
+        cycle.legs.length === 2
+          ? ("two-pool" as const)
+          : cycle.legs.length === 3
+            ? ("triangular" as const)
+            : ("multi-hop" as const),
       routeLegs,
       profit: {
         grossProfitUsd: 0,
@@ -2939,7 +2969,8 @@ async function scan(chain: "all" | ChainId) {
             if (!opportunity.executable) return opportunity;
             try {
               if (
-                (opportunity.routeKind === "triangular" ||
+                (opportunity.routeKind === "two-pool" ||
+                  opportunity.routeKind === "triangular" ||
                   opportunity.routeKind === "multi-hop") &&
                 opportunity.routeLegs
               ) {
