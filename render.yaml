@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: arb-scanner-api
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @workspace/api-server run build
+    startCommand: node --enable-source-maps artifacts/api-server/dist/index.mjs
+    healthCheckPath: /api/healthz
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 24.18.0
+      - key: ACROSS_ENABLED
+        value: false
+      - key: ACROSS_API_BASE_URL
+        value: https://app.across.to/api
+      - key: ACROSS_API_KEY
+        sync: false
+      - key: ACROSS_INTEGRATOR_ID
+        sync: false
+      - key: ACROSS_ALLOWED_CHAIN_IDS
+        value: 1,10,56,137,8453,42161,43114

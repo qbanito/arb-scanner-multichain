@@ -1,0 +1,22 @@
+[build]
+  publish = "dist/public"
+  command = "true"
+
+# Reverse-proxy /api/* to the Render-hosted api-server, server-side (Netlify's
+# edge, not the browser, makes this request) — same relative-path pattern
+# the Vite dev server's own proxy already uses, so the React app's fetch
+# calls (relative "/api/..." paths, no baseUrl set) work identically in
+# both dev and production without any code change. Avoids browser
+# mixed-content blocking too: the browser only ever talks HTTPS to Netlify.
+[[redirects]]
+  from = "/api/*"
+  to = "https://arb-scanner-api.onrender.com/api/:splat"
+  status = 200
+  force = true
+
+# SPA fallback for client-side routing (wouter) — must come after the /api
+# rule above, first match wins.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

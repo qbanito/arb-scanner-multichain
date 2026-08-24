@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Arbitrage Scanner"
+description = "A live market-intelligence cockpit for discovering, ranking, and inspecting cross-chain arbitrage opportunities across Ethereum and Arbitrum liquidity."
+version = "1.0.0"
+id = "artifacts/arb-scanner"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 26056
+
+[services.development]
+run = "pnpm --filter @workspace/arb-scanner run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/arb-scanner", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/arb-scanner/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "26056"
+BASE_PATH = "/"

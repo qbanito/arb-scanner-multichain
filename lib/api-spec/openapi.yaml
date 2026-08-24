@@ -1,0 +1,945 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: API specification
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: scanner
+    description: Arbitrage discovery and market intelligence
+  - name: liquidations
+    description: Aave V3 liquidation opportunity discovery
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /scanner/summary:
+    get:
+      operationId: getScannerSummary
+      tags: [scanner]
+      summary: Get scanner summary
+      responses:
+        "200":
+          description: Scanner summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScannerSummary"
+  /scanner/networks:
+    get:
+      operationId: getScannerNetworks
+      tags: [scanner]
+      summary: Get network health and scan coverage
+      responses:
+        "200":
+          description: Supported network health
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/NetworkStatus"
+  /scanner/tokens:
+    get:
+      operationId: getScannerTokens
+      tags: [scanner]
+      summary: Get the tracked token universe
+      responses:
+        "200":
+          description: Tracked tokens
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ScannerToken"
+  /scanner/across/status:
+    get:
+      operationId: getScannerAcrossStatus
+      tags: [scanner]
+      summary: Get Across cross-chain quote layer status
+      responses:
+        "200":
+          description: Across integration status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AcrossStatus"
+  /scanner/across/quote:
+    get:
+      operationId: getScannerAcrossQuote
+      tags: [scanner]
+      summary: Get an Across cross-chain quote without submitting it
+      parameters:
+        - name: originChainId
+          in: query
+          required: true
+          schema: { type: number }
+        - name: destinationChainId
+          in: query
+          required: true
+          schema: { type: number }
+        - name: inputToken
+          in: query
+          required: true
+          schema: { type: string }
+        - name: outputToken
+          in: query
+          required: true
+          schema: { type: string }
+        - name: amount
+          in: query
+          required: true
+          schema: { type: string }
+        - name: depositor
+          in: query
+          required: true
+          schema: { type: string }
+        - name: recipient
+          in: query
+          schema: { type: string }
+        - name: tradeType
+          in: query
+          schema:
+            type: string
+            enum: [exactInput, minOutput]
+            default: exactInput
+      responses:
+        "200":
+          description: Across executable calldata, returned for simulation/inspection only
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AcrossQuote"
+        "400":
+          description: Invalid quote request
+        "502":
+          description: Across quote unavailable
+  /scanner/across/profit:
+    get:
+      operationId: getScannerAcrossProfit
+      tags: [scanner]
+      summary: Calculate net cross-chain spread after Across costs
+      parameters:
+        - { name: originSaleUsd, in: query, required: true, schema: { type: number } }
+        - { name: destinationBuyUsd, in: query, required: true, schema: { type: number } }
+        - { name: acrossFeeUsd, in: query, required: true, schema: { type: number } }
+        - { name: originGasUsd, in: query, required: true, schema: { type: number } }
+        - { name: destinationGasUsd, in: query, required: true, schema: { type: number } }
+        - { name: slippageUsd, in: query, required: true, schema: { type: number } }
+        - { name: inventoryCarryUsd, in: query, schema: { type: number } }
+      responses:
+        "200":
+          description: Conservative cross-chain profit estimate
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AcrossProfit"
+  /scanner/opportunities:
+    get:
+      operationId: getScannerOpportunities
+      tags: [scanner]
+      summary: Scan supported chains and DEX pools for price dislocations
+      parameters:
+        - name: chain
+          in: query
+          schema:
+            type: string
+            enum:
+              - all
+              - ethereum
+              - arbitrum
+              - optimism
+              - polygon
+              - base
+              - avalanche
+              - bsc
+              - celo
+              - linea
+              - mantle
+              - scroll
+              - sonic
+              - zksync
+              - soneium
+            default: all
+        - name: token
+          in: query
+          schema:
+            type: string
+        - name: minProfitBps
+          in: query
+          schema:
+            type: number
+            default: 0
+        - name: limit
+          in: query
+          schema:
+            type: number
+            default: 20
+            minimum: 1
+            maximum: 300
+      responses:
+        "200":
+          description: Ranked arbitrage opportunities
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ArbitrageOpportunity"
+  /scanner/opportunities/{id}:
+    get:
+      operationId: getScannerOpportunity
+      tags: [scanner]
+      summary: Get opportunity route and profit estimate
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Opportunity detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArbitrageOpportunity"
+        "404":
+          description: Opportunity not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /scanner/funding/{chainId}:
+    get:
+      operationId: getScannerFunding
+      tags: [scanner]
+      summary: Get verified operator gas-funding readiness for one route network
+      description: >-
+        Reads the deployed ArbExecutor owner and that owner's native-token
+        balance directly on-chain. The returned operator address is therefore
+        the verified gas destination for this deployment, not a client-supplied
+        address. Flash-loan principal must not be deposited here.
+      parameters:
+        - name: chainId
+          in: path
+          required: true
+          schema:
+            type: number
+      responses:
+        "200":
+          description: Verified gas-funding readiness
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScannerFunding"
+        "404":
+          description: No executor is configured for this network
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: On-chain readiness could not be verified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /liquidations/opportunities:
+    get:
+      operationId: getLiquidationOpportunities
+      tags: [liquidations]
+      summary: Aave V3 borrower positions at or near liquidation risk
+      description: >-
+        Health Factor is read live on-chain per candidate (never estimated) —
+        candidates come from Aave's subgraph, which cannot compute a
+        real-time Health Factor itself since it depends on live prices, not
+        indexed events.
+      parameters:
+        - name: chain
+          in: query
+          schema:
+            type: string
+            enum: [all, arbitrum, ethereum]
+            default: all
+        - name: maxHealthFactor
+          in: query
+          description: Upper bound on Health Factor to include (1.0 = exactly liquidatable).
+          schema:
+            type: number
+            default: 1.05
+        - name: limit
+          in: query
+          schema:
+            type: number
+            default: 20
+            minimum: 1
+            maximum: 100
+      responses:
+        "200":
+          description: Positions at or near liquidation risk, ranked by lowest Health Factor first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/LiquidationOpportunity"
+        "503":
+          description: Live position data is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /liquidations/strategy:
+    get:
+      operationId: getLiquidationStrategyDetail
+      tags: [liquidations]
+      summary: On-demand deep readiness check for one specific liquidation position
+      description: >-
+        Everything beyond the cheap always-on checks (executorDeployed,
+        aaveLiquiditySufficient) already present on each LiquidationOpportunity:
+        a real DEX quote for the collateral-sell leg at this exact size across
+        every supported venue, a real gas cost estimate from actual historical
+        liquidations on this market, and who has actually been winning
+        liquidations here recently. Deliberately not run for every item in the
+        list — each of these costs several real RPC/API calls — this is meant
+        to be called for one position at a time, when a user opens its detail
+        view.
+      parameters:
+        - name: chainId
+          in: query
+          required: true
+          schema:
+            type: number
+        - name: poolAddress
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: debtAssetAddress
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: collateralAssetAddress
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: debtAmount
+          in: query
+          required: true
+          description: Raw on-chain amount of the debt asset to cover (LiquidationOpportunity.debt.amount).
+          schema:
+            type: string
+        - name: collateralAmount
+          in: query
+          required: true
+          description: Raw on-chain amount of collateral expected to be seized (LiquidationOpportunity.collateral.amount).
+          schema:
+            type: string
+        - name: estimatedBonusUsd
+          in: query
+          required: true
+          schema:
+            type: number
+      responses:
+        "200":
+          description: Deep strategy detail for this position
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LiquidationStrategyDetail"
+        "503":
+          description: Could not compute the detail (RPC/API unavailable)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
+    ScannerSummary:
+      type: object
+      properties:
+        activeOpportunities:
+          type: number
+        poolsScanned:
+          type: number
+        tokensTracked:
+          type: number
+        estimatedNetProfit24h:
+          type: number
+        lastScanAt:
+          type: string
+        scanLatencyMs:
+          type: number
+        candidatesDiscovered:
+          type: number
+          description: Raw price/graph candidates found before route-closure and adapter checks.
+        routableCandidates:
+          type: number
+          description: Candidates whose complete same-chain route is supported by verified adapters.
+        routesQuoted:
+          type: number
+          description: Complete routes that received an exact on-chain quote.
+        routesUnavailable:
+          type: number
+          description: Routable candidates whose exact quote failed or was unavailable.
+        routeCoveragePct:
+          type: number
+          description: Percentage of discovered candidates converted into complete routable cycles.
+        quoteCoveragePct:
+          type: number
+          description: Percentage of routable candidates with an exact quote in this scan.
+      required:
+        [
+          activeOpportunities,
+          poolsScanned,
+          tokensTracked,
+          estimatedNetProfit24h,
+          lastScanAt,
+          scanLatencyMs,
+          candidatesDiscovered,
+          routableCandidates,
+          routesQuoted,
+          routesUnavailable,
+          routeCoveragePct,
+          quoteCoveragePct,
+        ]
+    NetworkStatus:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        chainId:
+          type: number
+        status:
+          type: string
+          enum: [healthy, degraded, unavailable]
+        blockNumber:
+          type: number
+        gasGwei:
+          type: number
+        blockTimeMs:
+          type: number
+        pools:
+          type: number
+        lastBlockAt:
+          type: string
+      required:
+        [
+          id,
+          name,
+          chainId,
+          status,
+          blockNumber,
+          gasGwei,
+          blockTimeMs,
+          pools,
+          lastBlockAt,
+        ]
+    ScannerToken:
+      type: object
+      properties:
+        symbol:
+          type: string
+        name:
+          type: string
+        address:
+          type: string
+        decimals:
+          type: number
+        chains:
+          type: array
+          items:
+            type: string
+        liquidityUsd:
+          type: number
+        pools:
+          type: number
+        priceUsd:
+          type: number
+        change24h:
+          type: number
+      required:
+        [
+          symbol,
+          name,
+          address,
+          decimals,
+          chains,
+          liquidityUsd,
+          pools,
+          priceUsd,
+          change24h,
+        ]
+    ScannerFunding:
+      type: object
+      description: Live, on-chain-verified gas balance for the owner of a deployed ArbExecutor.
+      properties:
+        chainId:
+          type: number
+        chain:
+          type: string
+        nativeSymbol:
+          type: string
+        operatorAddress:
+          type: string
+          description: Owner read from the ArbExecutor contract; native gas must be sent here.
+        executorAddress:
+          type: string
+        balanceWei:
+          type: string
+          description: Current operator native-token balance in wei.
+        minimumBalanceWei:
+          type: string
+          description: Safety minimum below which live execution readiness fails.
+        shortfallWei:
+          type: string
+          description: Exact amount needed to reach the safety minimum.
+        recommendedDepositWei:
+          type: string
+          description: Suggested top-up to reach two times the safety minimum and leave a gas buffer.
+        ready:
+          type: boolean
+        paused:
+          type: boolean
+          description: Whether the ArbExecutor is currently paused.
+        explorerUrl:
+          type: string
+        checkedAt:
+          type: string
+      required:
+        [
+          chainId,
+          chain,
+          nativeSymbol,
+          operatorAddress,
+          executorAddress,
+          balanceWei,
+          minimumBalanceWei,
+          shortfallWei,
+          recommendedDepositWei,
+          ready,
+          paused,
+          explorerUrl,
+          checkedAt,
+        ]
+    AcrossStatus:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        apiBaseUrl: { type: string }
+        apiKeyConfigured: { type: boolean }
+        integratorIdConfigured: { type: boolean }
+        allowedChainIds:
+          type: array
+          items: { type: number }
+        executionMode: { type: string, enum: [quote-only] }
+        blocker: { type: string, enum: [cross-chain-inventory-required] }
+      required: [enabled, apiBaseUrl, apiKeyConfigured, integratorIdConfigured, allowedChainIds, executionMode, blocker]
+    AcrossTransaction:
+      type: object
+      properties:
+        to: { type: string }
+        data: { type: string }
+        value: { type: string }
+        gas: { type: string }
+      required: [to, data]
+    AcrossFees:
+      type: object
+      properties:
+        totalUsd: { type: number }
+        totalRaw: { type: string }
+        details: { type: object, additionalProperties: true }
+    AcrossQuote:
+      type: object
+      properties:
+        id: { type: string }
+        originChainId: { type: number }
+        destinationChainId: { type: number }
+        inputToken: { type: string }
+        outputToken: { type: string }
+        amount: { type: string }
+        expectedOutputAmount: { type: string }
+        minOutputAmount: { type: string }
+        expectedFillTimeSeconds: { type: number }
+        quoteExpiryTimestamp: { type: number }
+        fees: { $ref: "#/components/schemas/AcrossFees" }
+        simulationSuccess: { type: boolean }
+        checks: {}
+        approvalTxns:
+          type: array
+          items: { $ref: "#/components/schemas/AcrossTransaction" }
+        swapTx: { $ref: "#/components/schemas/AcrossTransaction" }
+        executionMode: { type: string, enum: [quote-only] }
+        executable: { type: boolean, enum: [false] }
+        blocker: { type: string, enum: [cross-chain-inventory-required] }
+      required: [originChainId, destinationChainId, inputToken, outputToken, amount, expectedOutputAmount, fees, approvalTxns, swapTx, executionMode, executable, blocker]
+    AcrossProfit:
+      type: object
+      properties:
+        grossSpreadUsd: { type: number }
+        totalCostsUsd: { type: number }
+        netProfitUsd: { type: number }
+        executable: { type: boolean, enum: [false] }
+        blocker: { type: string, enum: [cross-chain-inventory-required] }
+      required: [grossSpreadUsd, totalCostsUsd, netProfitUsd, executable, blocker]
+    DEXVenue:
+      type: object
+      properties:
+        name:
+          type: string
+        dexId:
+          type: string
+          description: Raw DexScreener venue identifier (e.g. "uniswap", "pancakeswap", "velodrome", "aerodrome"), used to resolve a protocol-specific on-chain adapter for execution.
+        chain:
+          type: string
+        priceUsd:
+          type: number
+        liquidityUsd:
+          type: number
+        feeBps:
+          type: number
+        pairAddress:
+          type: string
+        dexUrl:
+          type: string
+        labels:
+          type: array
+          items:
+            type: string
+          description: Raw DexScreener venue labels (e.g. ["v4"]). Absent/empty for standard V2/V3-style pools.
+        quoteTokenAddress:
+          type: string
+          description: Contract address of the pool's non-arbitraged (quote) token. Two venues can only be routed against each other in a single flash-loan round trip if this matches on both sides.
+        quoteTokenSymbol:
+          type: string
+      required:
+        [
+          name,
+          dexId,
+          chain,
+          priceUsd,
+          liquidityUsd,
+          feeBps,
+          pairAddress,
+          dexUrl,
+        ]
+    SwapRouteLeg:
+      type: object
+      description: One executable swap in an atomic arbitrage cycle, in execution order.
+      properties:
+        tokenInAddress:
+          type: string
+        tokenInSymbol:
+          type: string
+        tokenInDecimals:
+          type: number
+        tokenOutAddress:
+          type: string
+        tokenOutSymbol:
+          type: string
+        tokenOutDecimals:
+          type: number
+        venue:
+          $ref: "#/components/schemas/DEXVenue"
+      required:
+        [
+          tokenInAddress,
+          tokenInSymbol,
+          tokenInDecimals,
+          tokenOutAddress,
+          tokenOutSymbol,
+          tokenOutDecimals,
+          venue,
+        ]
+    ProfitEstimate:
+      type: object
+      properties:
+        grossProfitUsd:
+          type: number
+        flashLoanFeeUsd:
+          type: number
+        gasCostUsd:
+          type: number
+        dexFeesUsd:
+          type: number
+        slippageUsd:
+          type: number
+        netProfitUsd:
+          type: number
+        recommendedBorrowUsd:
+          type: number
+        confidence:
+          type: string
+          enum: [high, medium, low]
+      required:
+        [
+          grossProfitUsd,
+          flashLoanFeeUsd,
+          gasCostUsd,
+          dexFeesUsd,
+          slippageUsd,
+          netProfitUsd,
+          recommendedBorrowUsd,
+          confidence,
+        ]
+    ArbitrageOpportunity:
+      type: object
+      properties:
+        id:
+          type: string
+        token:
+          type: string
+        tokenAddress:
+          type: string
+          description: ERC-20 contract address of the arbitraged token on `chainId`.
+        tokenDecimals:
+          type: number
+          description: Decimals of the ERC-20 at `tokenAddress`, needed to convert USD amounts to on-chain wei.
+        pair:
+          type: string
+        chain:
+          type: string
+        chainId:
+          type: number
+        spreadBps:
+          type: number
+        spreadPct:
+          type: number
+        buyVenue:
+          $ref: "#/components/schemas/DEXVenue"
+        sellVenue:
+          $ref: "#/components/schemas/DEXVenue"
+        routeKind:
+          type: string
+          enum: [two-pool, cross-stable, triangular, multi-hop]
+          description: Shape of the complete same-chain atomic cycle.
+        routeLegs:
+          type: array
+          maxItems: 6
+          items:
+            $ref: "#/components/schemas/SwapRouteLeg"
+          description: Explicit ordered swap path of up to six atomic swaps. Present for graph-discovered multi-protocol cycles.
+        profit:
+          $ref: "#/components/schemas/ProfitEstimate"
+        detectedAt:
+          type: string
+        blockNumber:
+          type: number
+        executable:
+          type: boolean
+        executorDeployed:
+          type: boolean
+          description: Whether this chain currently has a configured ArbExecutor deployment. False means exact-profit monitoring only.
+        quoteStatus:
+          type: string
+          enum: [estimated, quoted, unavailable]
+          description: Whether profit is only graph-estimated, fully quoted on-chain, or could not be quoted by a verified adapter.
+        executionBlocker:
+          type: string
+          enum:
+            [
+              negative-net,
+              executor-not-deployed,
+              quote-budget,
+              quote-failed,
+              target-not-allowed,
+              unsupported-or-open-route,
+            ]
+          description: Concrete reason the route cannot currently be submitted. Omitted when no blocker remains.
+        status:
+          type: string
+          enum: [new, monitoring, stale]
+      required:
+        [
+          id,
+          token,
+          tokenAddress,
+          tokenDecimals,
+          pair,
+          chain,
+          chainId,
+          spreadBps,
+          spreadPct,
+          buyVenue,
+          sellVenue,
+          profit,
+          detectedAt,
+          blockNumber,
+          executable,
+          status,
+        ]
+    LiquidationAssetAmount:
+      type: object
+      properties:
+        symbol:
+          type: string
+        address:
+          type: string
+        amount:
+          type: string
+          description: Raw on-chain amount, as a decimal string (may exceed safe integer precision).
+        amountUsd:
+          type: number
+      required: [symbol, address, amount, amountUsd]
+    LiquidationOpportunity:
+      type: object
+      properties:
+        id:
+          type: string
+        chain:
+          type: string
+        chainId:
+          type: number
+        userAddress:
+          type: string
+          description: Address of the at-risk Aave borrower.
+        market:
+          type: string
+          description: Which Aave V3 market this position is in (e.g. "main", "lido", "etherfi") — a chain can have several isolated markets, each with its own Pool contract, so this plus poolAddress is what a liquidator actually needs to target the right one.
+        poolAddress:
+          type: string
+          description: The Aave V3 Pool contract address for this position's market — required to call liquidationCall against the correct market, since chainId alone is ambiguous once a chain has more than one market.
+        healthFactor:
+          type: number
+          description: Live on-chain Health Factor. At or below 1.0 means the position is liquidatable right now.
+        debt:
+          $ref: "#/components/schemas/LiquidationAssetAmount"
+        collateral:
+          $ref: "#/components/schemas/LiquidationAssetAmount"
+        liquidationBonusPct:
+          type: number
+          description: Protocol-defined bonus (e.g. 5 for 5%) a liquidator receives on this collateral asset.
+        maxDebtToCoverUsd:
+          type: number
+          description: Largest single-call liquidation size allowed right now (Aave's close factor — 50% normally, 100% if Health Factor is below 0.95).
+        estimatedBonusUsd:
+          type: number
+          description: Approximate liquidator profit in USD if maxDebtToCoverUsd were liquidated now, before gas.
+        detectedAt:
+          type: string
+        liquidatable:
+          type: boolean
+          description: True when healthFactor <= 1.0.
+        strategy:
+          $ref: "#/components/schemas/LiquidationStrategy"
+      required:
+        [
+          id,
+          chain,
+          chainId,
+          userAddress,
+          market,
+          poolAddress,
+          healthFactor,
+          debt,
+          collateral,
+          liquidationBonusPct,
+          maxDebtToCoverUsd,
+          estimatedBonusUsd,
+          detectedAt,
+          liquidatable,
+          strategy,
+        ]
+    LiquidationStrategy:
+      type: object
+      description: Cheap, always-on execution readiness for this position — computed for every item in the list. Deeper checks (DEX route, gas cost, competitors) are NOT included here since they cost several extra RPC/API calls per position; fetch those on demand from /liquidations/strategy when a user opens a position's detail view.
+      properties:
+        executorDeployed:
+          type: boolean
+          description: Whether an ArbExecutor contract exists on this chain at all. If false, nothing else here matters — there is no contract to send a liquidation transaction from yet.
+        aaveLiquidityAvailableUsd:
+          type: number
+          nullable: true
+          description: Real available liquidity for the debt asset in Aave's own pool right now (aToken supply minus outstanding debt) — this is what a flash loan can actually draw from. Null if it couldn't be read.
+        aaveLiquiditySufficient:
+          type: boolean
+          nullable: true
+          description: Whether aaveLiquidityAvailableUsd covers maxDebtToCoverUsd. Null if liquidity couldn't be read.
+      required:
+        [executorDeployed, aaveLiquidityAvailableUsd, aaveLiquiditySufficient]
+    LiquidationCompetitor:
+      type: object
+      description: A real liquidator address that has actually executed LiquidationCall transactions against this specific market in the lookback window, most active first.
+      properties:
+        liquidator:
+          type: string
+        count:
+          type: number
+          description: Number of liquidations this address executed on this market in the lookback window.
+      required: [liquidator, count]
+    LiquidationStrategyDetail:
+      type: object
+      description: Real, verified deep execution readiness for one specific position — not a theoretical estimate. Every field is either read live on-chain/API or explicitly null when we couldn't check it, never guessed.
+      properties:
+        routeBuildable:
+          type: boolean
+          nullable: true
+          description: Whether a real swap route (Uniswap V3 / Sushiswap V3 or V2 / Camelot V2) could be built for this exact trade size right now. Null if the check itself failed.
+        routeBlockedReason:
+          type: string
+          nullable: true
+          description: Why the route isn't buildable, when routeBuildable is false (e.g. no pool on any supported venue has enough depth for this trade size).
+        estimatedGasCostUsd:
+          type: number
+          nullable: true
+          description: Real gas cost estimate in USD — live eth_estimateGas if an ArbExecutor is deployed here, otherwise the average of real recent historical liquidations on this exact market, priced at the current gas price. Null when not computed.
+        gasCostBasis:
+          type: string
+          nullable: true
+          description: How estimatedGasCostUsd was derived, e.g. "live simulation" or "30d historical average (N liquidations)".
+        estimatedNetProfitUsd:
+          type: number
+          nullable: true
+          description: estimatedBonusUsd minus estimatedGasCostUsd, only meaningful when both are known.
+        topCompetitors:
+          type: array
+          items:
+            $ref: "#/components/schemas/LiquidationCompetitor"
+          description: Real liquidators who have executed LiquidationCall transactions on this exact market in the last 30 days, most active first — who you're actually racing against here.
+        sampleCount:
+          type: number
+          description: How many historical LiquidationCall events on this market this detail was derived from (0 means no history was found — a market that has never seen a liquidation, or one just deployed).
+      required:
+        [
+          routeBuildable,
+          routeBlockedReason,
+          estimatedGasCostUsd,
+          gasCostBasis,
+          estimatedNetProfitUsd,
+          topCompetitors,
+          sampleCount,
+        ]

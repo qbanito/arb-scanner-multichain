@@ -1,0 +1,359 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@plugin "@tailwindcss/typography";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-card-border: hsl(var(--card-border));
+
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-popover-border: hsl(var(--popover-border));
+
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-primary-border: var(--primary-border);
+
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-secondary-border: var(--secondary-border);
+
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-muted-border: var(--muted-border);
+
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-accent-border: var(--accent-border);
+
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-destructive-border: var(--destructive-border);
+
+  --color-chart-1: hsl(var(--chart-1));
+  --color-chart-2: hsl(var(--chart-2));
+  --color-chart-3: hsl(var(--chart-3));
+  --color-chart-4: hsl(var(--chart-4));
+  --color-chart-5: hsl(var(--chart-5));
+
+  --color-sidebar: hsl(var(--sidebar));
+  --color-sidebar-foreground: hsl(var(--sidebar-foreground));
+  --color-sidebar-border: hsl(var(--sidebar-border));
+  --color-sidebar-primary: hsl(var(--sidebar-primary));
+  --color-sidebar-primary-foreground: hsl(var(--sidebar-primary-foreground));
+  --color-sidebar-primary-border: var(--sidebar-primary-border);
+  --color-sidebar-accent: hsl(var(--sidebar-accent));
+  --color-sidebar-accent-foreground: hsl(var(--sidebar-accent-foreground));
+  --color-sidebar-accent-border: var(--sidebar-accent-border);
+  --color-sidebar-ring: hsl(var(--sidebar-ring));
+
+  --font-sans: var(--app-font-sans);
+  --font-serif: var(--app-font-serif);
+  --font-mono: var(--app-font-mono);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+/* ============================================================
+   QUANTUM — a dark, glass, neon-signal design language.
+   Cyan = brand / primary signal. Violet = secondary data series.
+   Emerald = profit / healthy. Amber = watching / caution.
+   Red = risk / liquidatable now.
+   ============================================================ */
+:root,
+.dark {
+  --button-outline: rgba(255, 255, 255, 0.1);
+  --badge-outline: rgba(255, 255, 255, 0.06);
+  --opaque-button-border-intensity: 9;
+  --elevate-1: rgba(255, 255, 255, 0.04);
+  --elevate-2: rgba(255, 255, 255, 0.09);
+
+  --background: 234 42% 5%;
+  --foreground: 210 30% 96%;
+
+  --border: 230 24% 18%;
+
+  --card: 230 32% 9%;
+  --card-foreground: 210 30% 96%;
+  --card-border: 230 24% 18%;
+
+  --sidebar: 235 40% 4%;
+  --sidebar-foreground: 216 20% 80%;
+  --sidebar-border: 230 24% 15%;
+  --sidebar-primary: 189 94% 55%;
+  --sidebar-primary-foreground: 234 42% 5%;
+  --sidebar-accent: 230 28% 12%;
+  --sidebar-accent-foreground: 210 30% 96%;
+  --sidebar-ring: 189 94% 55%;
+
+  --popover: 230 32% 9%;
+  --popover-foreground: 210 30% 96%;
+  --popover-border: 230 24% 18%;
+
+  /* Electric cyan — the signature brand signal color. */
+  --primary: 189 94% 55%;
+  --primary-foreground: 234 42% 5%;
+
+  --secondary: 230 26% 14%;
+  --secondary-foreground: 210 30% 96%;
+
+  --muted: 230 26% 13%;
+  --muted-foreground: 220 14% 62%;
+
+  /* Emerald — profit / healthy / executable. */
+  --accent: 158 84% 46%;
+  --accent-foreground: 234 42% 5%;
+
+  /* Violet — secondary data series / risk-adjacent accents. */
+  --violet: 262 83% 68%;
+  --violet-foreground: 234 42% 5%;
+
+  /* Amber — watching / approaching risk. */
+  --warning: 38 95% 58%;
+  --warning-foreground: 234 42% 5%;
+
+  --destructive: 0 84% 63%;
+  --destructive-foreground: 210 30% 96%;
+
+  --input: 230 24% 22%;
+  --ring: 189 94% 55%;
+
+  --chart-1: 189 94% 55%;
+  --chart-2: 158 84% 46%;
+  --chart-3: 262 83% 68%;
+  --chart-4: 38 95% 58%;
+  --chart-5: 0 84% 63%;
+
+  --app-font-sans: 'Space Grotesk', sans-serif;
+  --app-font-serif: 'Space Grotesk', sans-serif;
+  --app-font-mono: 'DM Mono', monospace;
+  --radius: 0.875rem;
+  --tracking-normal: 0em;
+  --spacing: 0.25rem;
+
+  --sidebar-primary-border: hsl(var(--sidebar-primary));
+  --primary-border: hsl(var(--primary));
+  --secondary-border: hsl(var(--secondary));
+  --muted-border: hsl(var(--muted));
+  --accent-border: hsl(var(--accent));
+  --destructive-border: hsl(var(--destructive));
+  --sidebar-accent-border: hsl(var(--sidebar-accent));
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply font-sans antialiased bg-background text-foreground;
+  }
+}
+
+@layer utilities {
+  input[type='search']::-webkit-search-cancel-button {
+    @apply hidden;
+  }
+
+  [contenteditable][data-placeholder]:empty::before {
+    content: attr(data-placeholder);
+    color: hsl(var(--muted-foreground));
+    pointer-events: none;
+  }
+}
+
+/* ---------- foundation ---------- */
+:root {
+  color-scheme: dark;
+}
+html {
+  scroll-behavior: smooth;
+}
+body {
+  min-width: 320px;
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--border)) transparent;
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 99px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+button,
+select,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+button:focus-visible,
+select:focus-visible,
+a:focus-visible {
+  outline: 2px solid hsl(var(--primary));
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+.font-mono-tight {
+  font-family: var(--app-font-mono);
+  letter-spacing: -0.01em;
+}
+
+/* ---------- animated backdrop ---------- */
+.quantum-field {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  background: hsl(var(--background));
+}
+.quantum-field::before,
+.quantum-field::after {
+  content: '';
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(90px);
+  opacity: 0.16;
+  will-change: transform;
+}
+.quantum-field::before {
+  width: 60vmax;
+  height: 60vmax;
+  top: -20vmax;
+  left: -10vmax;
+  background: radial-gradient(circle, hsl(var(--primary)) 0%, transparent 70%);
+  animation: drift-a 26s ease-in-out infinite;
+}
+.quantum-field::after {
+  width: 55vmax;
+  height: 55vmax;
+  bottom: -22vmax;
+  right: -14vmax;
+  background: radial-gradient(circle, hsl(var(--violet)) 0%, transparent 70%);
+  animation: drift-b 32s ease-in-out infinite;
+}
+.quantum-grid {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background-image:
+    linear-gradient(hsl(var(--foreground) / 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, hsl(var(--foreground) / 0.025) 1px, transparent 1px);
+  background-size: 42px 42px;
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 40%, transparent 100%);
+}
+@keyframes drift-a {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(6vmax, 8vmax) scale(1.15); }
+}
+@keyframes drift-b {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(-7vmax, -5vmax) scale(1.1); }
+}
+
+/* ---------- glass surfaces ---------- */
+.glass {
+  background: hsl(var(--card) / 0.6);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  border: 1px solid hsl(var(--border) / 0.8);
+}
+.glass-strong {
+  background: hsl(var(--card) / 0.86);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  border: 1px solid hsl(var(--border));
+}
+.glow-ring {
+  position: relative;
+}
+.glow-ring::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(135deg, hsl(var(--primary) / 0.5), transparent 40%, hsl(var(--violet) / 0.35));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  pointer-events: none;
+}
+.glow-ring:hover::before {
+  opacity: 1;
+}
+.text-glow {
+  text-shadow: 0 0 24px hsl(var(--primary) / 0.35);
+}
+.dot-live {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: hsl(var(--accent));
+  box-shadow: 0 0 0 3px hsl(var(--accent) / 0.16), 0 0 10px hsl(var(--accent) / 0.7);
+  animation: pulse-dot 2.2s ease-in-out infinite;
+}
+.dot-live.warn {
+  background: hsl(var(--warning));
+  box-shadow: 0 0 0 3px hsl(var(--warning) / 0.16), 0 0 10px hsl(var(--warning) / 0.7);
+}
+.dot-live.risk {
+  background: hsl(var(--destructive));
+  box-shadow: 0 0 0 3px hsl(var(--destructive) / 0.16), 0 0 10px hsl(var(--destructive) / 0.7);
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(0.85); }
+}
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  border-radius: 8px;
+  background: hsl(var(--secondary));
+}
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, hsl(var(--foreground) / 0.06), transparent);
+  animation: shimmer 1.4s infinite;
+}
+@keyframes shimmer {
+  to { transform: translateX(100%); }
+}
+@keyframes spin-slow {
+  to { transform: rotate(360deg); }
+}
+.spin {
+  animation: spin-slow 1s linear infinite;
+}
+
+/* ---------- gradient text / brand mark ---------- */
+.brand-gradient {
+  background: linear-gradient(120deg, hsl(var(--primary)), hsl(var(--violet)) 60%, hsl(var(--accent)));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
