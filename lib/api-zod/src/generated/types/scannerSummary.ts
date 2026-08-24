@@ -25,4 +25,12 @@ export interface ScannerSummary {
   routeCoveragePct: number;
   /** Percentage of routable candidates with an exact quote in this scan. */
   quoteCoveragePct: number;
+  /** Exact-quoted routes that clear principal, flash-loan premium, and configured slippage before gas. */
+  exactQuotePositive: number;
+  /** Exact-quoted routes with gross output profit before costs. */
+  grossProfitPositive: number;
+  /** Exact-quoted routes with positive live-gas-screened net profit. */
+  netProfitPositive: number;
+  /** Positive-net routes whose executor and target allow-list are ready for final simulation. */
+  readyForSimulation: number;
 }

@@ -8,6 +8,32 @@ function uniqueSizes(values: number[], maximum: number): number[] {
 }
 
 /**
+ * Produces capital sizes that can actually pay a network transaction.  The
+ * previous percentage-only samples could turn a $350 capacity into a $7
+ * quote.  That is useful for a unit test but not for mainnet arbitrage where
+ * gas is a mostly fixed cost.  Keep a few relative samples too, because they
+ * are still valuable when a pool is much deeper than the standard ladder.
+ */
+function viableSizes(
+  minimum: number,
+  maximum: number,
+  preferred: readonly number[],
+): number[] {
+  return uniqueSizes(
+    [
+      minimum,
+      ...preferred,
+      0.1 * maximum,
+      0.25 * maximum,
+      0.5 * maximum,
+      0.75 * maximum,
+      maximum,
+    ].filter((value) => value >= minimum),
+    maximum,
+  ).filter((value) => value >= minimum);
+}
+
+/**
  * Finds the best flash-loan size without assuming a particular AMM invariant.
  * It first samples the full capital range, then performs a bounded golden
  * section refinement around the best sample. The evaluator is deliberately
@@ -15,13 +41,20 @@ function uniqueSizes(values: number[], maximum: number): number[] {
  */
 export async function optimizeBorrowSize<T>(args: {
   maxBorrowUsd: number;
+  /** Refuse dust-sized quote calls which cannot plausibly clear gas. */
+  minBorrowUsd?: number;
+  /** Fixed USD points, normally the strategy's capital ladder. */
+  preferredBorrowUsd?: readonly number[];
   evaluate: (borrowUsd: number) => Promise<{ value: number; result: T } | null>;
   refinementIterations?: number;
 }): Promise<BorrowEvaluation<T> | null> {
-  if (!Number.isFinite(args.maxBorrowUsd) || args.maxBorrowUsd < 1) return null;
-  const coarse = uniqueSizes(
-    [0.02, 0.06, 0.15, 0.35, 0.65, 1].map((ratio) => args.maxBorrowUsd * ratio),
+  const minimum = Math.max(1, args.minBorrowUsd ?? 1);
+  if (!Number.isFinite(args.maxBorrowUsd) || args.maxBorrowUsd < minimum)
+    return null;
+  const coarse = viableSizes(
+    minimum,
     args.maxBorrowUsd,
+    args.preferredBorrowUsd ?? [1_000, 2_500, 5_000, 10_000, 25_000, 50_000, 100_000, 250_000],
   );
   const evaluated = new Map<number, BorrowEvaluation<T> | null>();
   const at = async (borrowUsd: number): Promise<BorrowEvaluation<T> | null> => {
@@ -42,7 +75,7 @@ export async function optimizeBorrowSize<T>(args: {
 
   const ordered = [...coarse].sort((a, b) => a - b);
   const bestIndex = ordered.findIndex((size) => size === best!.borrowUsd);
-  let left = bestIndex > 0 ? ordered[bestIndex - 1]! : 1;
+  let left = bestIndex > 0 ? ordered[bestIndex - 1]! : minimum;
   let right = bestIndex < ordered.length - 1 ? ordered[bestIndex + 1]! : args.maxBorrowUsd;
   if (right - left < 0.02) return best;
 
@@ -71,4 +104,3 @@ export async function optimizeBorrowSize<T>(args: {
   best = successful().sort((a, b) => b.value - a.value)[0] ?? best;
   return best;
 }
-

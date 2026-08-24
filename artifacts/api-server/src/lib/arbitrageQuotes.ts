@@ -353,12 +353,14 @@ function sizingRefinementIterations(): number {
   return Number.isFinite(parsed) ? Math.min(10, Math.max(0, parsed)) : 4;
 }
 
-export async function quoteClosedRoute(client: any, args: { chainId: number; tokenAddress: string; tokenDecimals: number; buyQuoteAddress: string; buyQuoteDecimals: number; sellQuoteAddress: string; sellQuoteDecimals: number; buy: Venue; sell: Venue; maxBorrowUsd: number; slippageBps: number; borrowTokenPriceUsd?: number }): Promise<ClosedRouteQuote | null> {
+export async function quoteClosedRoute(client: any, args: { chainId: number; tokenAddress: string; tokenDecimals: number; buyQuoteAddress: string; buyQuoteDecimals: number; sellQuoteAddress: string; sellQuoteDecimals: number; buy: Venue; sell: Venue; maxBorrowUsd: number; minBorrowUsd?: number; preferredBorrowUsd?: readonly number[]; slippageBps: number; borrowTokenPriceUsd?: number }): Promise<ClosedRouteQuote | null> {
   const borrowTokenPriceUsd = args.borrowTokenPriceUsd ?? 1;
   if (!Number.isFinite(borrowTokenPriceUsd) || borrowTokenPriceUsd <= 0) return null;
   const premiumBps = await flashLoanPremiumBps(client, args.chainId);
   const optimized = await optimizeBorrowSize({
     maxBorrowUsd: args.maxBorrowUsd,
+    minBorrowUsd: args.minBorrowUsd,
+    preferredBorrowUsd: args.preferredBorrowUsd,
     refinementIterations: sizingRefinementIterations(),
     evaluate: async (borrowUsd) => {
       try {
@@ -418,6 +420,8 @@ export async function quoteAtomicCycle(client: any, args: {
   borrowTokenPriceUsd?: number;
   legs: AtomicQuoteLeg[];
   maxBorrowUsd: number;
+  minBorrowUsd?: number;
+  preferredBorrowUsd?: readonly number[];
   slippageBps: number;
 }): Promise<ClosedRouteQuote | null> {
   if (args.legs.length < 2 || args.legs.length > 6) return null;
@@ -430,6 +434,8 @@ export async function quoteAtomicCycle(client: any, args: {
   const premiumBps = await flashLoanPremiumBps(client, args.chainId);
   const optimized = await optimizeBorrowSize({
     maxBorrowUsd: args.maxBorrowUsd,
+    minBorrowUsd: args.minBorrowUsd,
+    preferredBorrowUsd: args.preferredBorrowUsd,
     refinementIterations: sizingRefinementIterations(),
     evaluate: async (borrowUsd) => {
       try {

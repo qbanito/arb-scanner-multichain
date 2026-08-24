@@ -137,6 +137,8 @@ type Opportunity = {
     | "executor-not-deployed"
     | "quote-budget"
     | "quote-failed"
+    | "below-minimum-size"
+    | "insufficient-liquidity"
     | "target-not-allowed"
     | "unsupported-or-open-route";
   status: "new" | "monitoring" | "stale";
@@ -1080,6 +1082,12 @@ const PANCAKE_V2_FACTORY_ABI = [
 const BORROW_ASSET_USD_FEEDS: Partial<
   Record<number, Record<string, `0x${string}`>>
 > = {
+  1: {
+    // ETH/USD. This also lets WETH-funded Ethereum cycles enter the exact
+    // quote pipeline instead of being rejected for a missing USD reference.
+    ["0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"]:
+      "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419",
+  },
   56: {
     // Chainlink BNB/USD, also used by the executor's independent sizing gate.
     [BSC_WBNB]: "0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE",
@@ -1283,7 +1291,7 @@ const SEARCH_LIMITS = {
   ),
   maxExactQuotes: boundedEnvInt(
     "SCANNER_MAX_EXACT_QUOTES_PER_CHAIN",
-    24,
+    48,
     8,
     300,
   ),
@@ -1342,6 +1350,67 @@ const GAS_COST_USD: Record<
   zksync: { standard: 0.08, graphBase: 0.12, extraHop: 0.03 },
   soneium: { standard: 0.05, graphBase: 0.08, extraHop: 0.02 },
 };
+
+// A live gas model is used only to rank and display current opportunities.
+// The executor still runs eth_estimateGas against ArbExecutor immediately
+// before its final simulation and never relies on this screening estimate.
+const ETHEREUM_WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
+const NATIVE_GAS_ASSET: Partial<Record<ChainId, string>> = {
+  ethereum: ETHEREUM_WETH,
+  bsc: BSC_WBNB,
+};
+const GAS_UNITS_BY_HOPS = { twoPool: 350_000, threePool: 440_000, extraHop: 100_000 };
+const GAS_SCREENING_HEADROOM = 1.2;
+const DEFAULT_MIN_BORROW_USD: Record<ChainId, number> = {
+  ethereum: 1_000,
+  bsc: 50,
+  arbitrum: 150,
+  optimism: 100,
+  polygon: 100,
+  base: 100,
+  avalanche: 100,
+  celo: 50,
+  linea: 100,
+  mantle: 50,
+  scroll: 100,
+  sonic: 50,
+  zksync: 100,
+  soneium: 50,
+};
+const DEFAULT_MIN_ROUTE_LIQUIDITY_USD: Record<ChainId, number> = {
+  ethereum: 100_000,
+  bsc: 25_000,
+  arbitrum: 50_000,
+  optimism: 30_000,
+  polygon: 30_000,
+  base: 30_000,
+  avalanche: 30_000,
+  celo: 20_000,
+  linea: 25_000,
+  mantle: 20_000,
+  scroll: 25_000,
+  sonic: 20_000,
+  zksync: 25_000,
+  soneium: 20_000,
+};
+
+function minBorrowUsd(chain: ChainId): number {
+  return boundedEnvInt(
+    `SCANNER_MIN_BORROW_USD_${chain.toUpperCase()}`,
+    DEFAULT_MIN_BORROW_USD[chain],
+    1,
+    1_000_000,
+  );
+}
+
+function minRouteLiquidityUsd(chain: ChainId): number {
+  return boundedEnvInt(
+    `SCANNER_MIN_ROUTE_LIQUIDITY_USD_${chain.toUpperCase()}`,
+    DEFAULT_MIN_ROUTE_LIQUIDITY_USD[chain],
+    1_000,
+    100_000_000,
+  );
+}
 
 const addressFromEnv = (key: string): `0x${string}` | undefined => {
   const value = process.env[key];
@@ -1541,6 +1610,52 @@ async function borrowAssetUsdPrice(
     },
     30_000,
   );
+}
+
+/**
+ * Current gas-price screening cost.  It intentionally falls back to the
+ * conservative static value when a chain has no verified native price feed,
+ * so a transient oracle/RPC issue can never create a synthetic positive.
+ */
+async function liveRouteGasCostUsd(
+  chain: ChainId,
+  hops: number,
+): Promise<number> {
+  const fallbackCost =
+    GAS_COST_USD[chain].graphBase +
+    Math.max(0, hops - 3) * GAS_COST_USD[chain].extraHop;
+  const nativeAsset = NATIVE_GAS_ASSET[chain];
+  if (!nativeAsset) return fallbackCost;
+  try {
+    return await cached(
+      `live-route-gas:${chain}:${Math.min(6, Math.max(2, hops))}`,
+      async () => {
+        const [gasPriceWei, nativeUsd] = await Promise.all([
+          CHAIN_CLIENTS[chain].getGasPrice() as Promise<bigint>,
+          borrowAssetUsdPrice(chain, nativeAsset),
+        ]);
+        if (!nativeUsd || nativeUsd <= 0) return fallbackCost;
+        const gasUnits =
+          hops <= 2
+            ? GAS_UNITS_BY_HOPS.twoPool
+            : GAS_UNITS_BY_HOPS.threePool +
+              Math.max(0, hops - 3) * GAS_UNITS_BY_HOPS.extraHop;
+        const gasCost =
+          (Number(gasPriceWei) / 1e9) *
+          (gasUnits / 1e9) *
+          nativeUsd *
+          GAS_SCREENING_HEADROOM;
+        return Number.isFinite(gasCost) && gasCost > 0
+          ? Number(gasCost.toFixed(4))
+          : fallbackCost;
+      },
+      10_000,
+      true,
+    );
+  } catch (err) {
+    logger.debug({ chain, err }, "live gas model unavailable; using fallback");
+    return fallbackCost;
+  }
 }
 
 async function rpcAt(
@@ -3290,9 +3405,31 @@ async function scan(chain: "all" | ChainId) {
           ...graphOpportunities,
           ...closedDirectOpportunities,
         ];
+        const minimumBorrow = minBorrowUsd(item);
+        const minimumRouteLiquidity = minRouteLiquidityUsd(item);
+        const qualityBlocker = (candidate: Opportunity) => {
+          if (candidate.profit.recommendedBorrowUsd < minimumBorrow)
+            return "below-minimum-size" as const;
+          const lowestLiquidity = candidate.routeLegs?.length
+            ? Math.min(
+                ...candidate.routeLegs.map((leg) => leg.venue.liquidityUsd),
+              )
+            : Math.min(
+                candidate.buyVenue.liquidityUsd,
+                candidate.sellVenue.liquidityUsd,
+              );
+          return lowestLiquidity < minimumRouteLiquidity
+            ? ("insufficient-liquidity" as const)
+            : undefined;
+        };
+        const quoteEligibleCandidates = candidates.filter(
+          (candidate) => candidate.executable && !qualityBlocker(candidate),
+        );
         const graphCandidates = candidates
           .filter(
-            (candidate) => candidate.executable && candidate.routeLegs?.length,
+            (candidate) =>
+              quoteEligibleCandidates.includes(candidate) &&
+              candidate.routeLegs?.length,
           )
           .sort(
             (a, b) =>
@@ -3301,7 +3438,9 @@ async function scan(chain: "all" | ChainId) {
           );
         const directCandidates = candidates
           .filter(
-            (candidate) => candidate.executable && !candidate.routeLegs?.length,
+            (candidate) =>
+              quoteEligibleCandidates.includes(candidate) &&
+              !candidate.routeLegs?.length,
           )
           .sort(
             (a, b) =>
@@ -3314,7 +3453,9 @@ async function scan(chain: "all" | ChainId) {
         const defaultExactQuoteBudget =
           item === "ethereum" || item === "arbitrum"
             ? SEARCH_LIMITS.maxExactQuotes
-            : Math.min(8, SEARCH_LIMITS.maxExactQuotes);
+            : item === "bsc"
+              ? Math.min(32, SEARCH_LIMITS.maxExactQuotes)
+              : Math.min(12, SEARCH_LIMITS.maxExactQuotes);
         const exactQuoteBudget = boundedEnvInt(
           `SCANNER_EXACT_QUOTE_BUDGET_${item.toUpperCase()}`,
           defaultExactQuoteBudget,
@@ -3407,10 +3548,28 @@ async function scan(chain: "all" | ChainId) {
             memePriorityQueue: quoteScheduler.stats(`${item}:meme-priority`),
             graphQueue: quoteScheduler.stats(`${item}:graph`),
             directQueue: quoteScheduler.stats(`${item}:direct`),
+            minimumBorrow,
+            minimumRouteLiquidity,
+            rejectedForSizeOrLiquidity: candidates.filter(
+              (candidate) => candidate.executable && qualityBlocker(candidate),
+            ).length,
           },
           "scheduled exact route quotes",
         );
         const budgetedCandidates = candidates.map((candidate) => {
+          const blocker = candidate.executable ? qualityBlocker(candidate) : undefined;
+          if (blocker)
+            return {
+              ...candidate,
+              executable: false,
+              quoteStatus: "estimated" as const,
+              executionBlocker: blocker,
+              profit: {
+                ...candidate.profit,
+                netProfitUsd: 0,
+                confidence: "low" as const,
+              },
+            };
           if (!candidate.executable || selectedForExactQuote.has(candidate.id))
             return candidate;
           return {
@@ -3425,6 +3584,18 @@ async function scan(chain: "all" | ChainId) {
             },
           };
         });
+        const gasByHops = new Map(
+          await Promise.all(
+            [...new Set(
+              budgetedCandidates
+                .filter((candidate) => candidate.executable)
+                .map((candidate) => candidate.routeLegs?.length ?? 2),
+            )].map(async (hops) => [
+              hops,
+              await liveRouteGasCostUsd(item, hops),
+            ] as const),
+          ),
+        );
         const opportunities = await mapWithConcurrency(
           budgetedCandidates,
           SEARCH_LIMITS.quoteConcurrency,
@@ -3454,13 +3625,13 @@ async function scan(chain: "all" | ChainId) {
                         venue: leg.venue,
                       })),
                       maxBorrowUsd: opportunity.profit.recommendedBorrowUsd,
+                      minBorrowUsd: minimumBorrow,
                       slippageBps: 20,
                     })
                   : null;
                 const gasCostUsd =
-                  GAS_COST_USD[item].graphBase +
-                  Math.max(0, opportunity.routeLegs.length - 3) *
-                    GAS_COST_USD[item].extraHop;
+                  gasByHops.get(opportunity.routeLegs.length) ??
+                  GAS_COST_USD[item].graphBase;
                 const netProfitUsd = quote
                   ? quote.netBeforeGasUsd - gasCostUsd
                   : 0;
@@ -3560,11 +3731,14 @@ async function scan(chain: "all" | ChainId) {
                     buy: opportunity.buyVenue,
                     sell: opportunity.sellVenue,
                     maxBorrowUsd: opportunity.profit.recommendedBorrowUsd,
+                    minBorrowUsd: minimumBorrow,
                     slippageBps: 20,
                     borrowTokenPriceUsd,
                   })
                 : null;
-              const gasCostUsd = GAS_COST_USD[item].standard;
+              const gasCostUsd =
+                gasByHops.get(opportunity.routeLegs?.length ?? 2) ??
+                GAS_COST_USD[item].standard;
               const netProfitUsd = quote
                 ? quote.netBeforeGasUsd - gasCostUsd
                 : 0;
@@ -4061,6 +4235,22 @@ router.get("/scanner/summary", async (_req, res) => {
     const routesUnavailable = opportunities.filter(
       (item) => item.quoteStatus === "unavailable",
     ).length;
+    const exactQuoted = opportunities.filter(
+      (item) => item.quoteStatus === "quoted",
+    );
+    const exactQuotePositive = exactQuoted.filter(
+      (item) =>
+        item.profit.grossProfitUsd -
+          item.profit.flashLoanFeeUsd -
+          item.profit.slippageUsd >
+        0,
+    ).length;
+    const grossProfitPositive = exactQuoted.filter(
+      (item) => item.profit.grossProfitUsd > 0,
+    ).length;
+    const netProfitPositive = exactQuoted.filter(
+      (item) => item.profit.netProfitUsd > 0,
+    ).length;
     const summary = {
       activeOpportunities: opportunities.filter((item) => item.executable)
         .length,
@@ -4092,6 +4282,15 @@ router.get("/scanner/summary", async (_req, res) => {
         routableCandidates > 0
           ? Number(((routesQuoted / routableCandidates) * 100).toFixed(1))
           : 0,
+      exactQuotePositive,
+      grossProfitPositive,
+      netProfitPositive,
+      // This is intentionally pre-simulation. The local executor performs
+      // eth_estimateGas and a fresh transaction simulation just before a send;
+      // exposing it separately prevents the dashboard from claiming a
+      // simulation passed when one has not occurred yet.
+      readyForSimulation: opportunities.filter((item) => item.executable)
+        .length,
     };
     res.json(GetScannerSummaryResponse.parse(summary));
   } catch (err) {

@@ -17,6 +17,8 @@ export const ArbitrageOpportunityExecutionBlocker = {
   'executor-not-deployed': 'executor-not-deployed',
   'quote-budget': 'quote-budget',
   'quote-failed': 'quote-failed',
+  'below-minimum-size': 'below-minimum-size',
+  'insufficient-liquidity': 'insufficient-liquidity',
   'target-not-allowed': 'target-not-allowed',
   'unsupported-or-open-route': 'unsupported-or-open-route',
 } as const;

@@ -746,6 +746,10 @@ type SummaryData = {
   routesUnavailable: number;
   routeCoveragePct: number;
   quoteCoveragePct: number;
+  exactQuotePositive: number;
+  grossProfitPositive: number;
+  netProfitPositive: number;
+  readyForSimulation: number;
 };
 
 function StatCard({
@@ -863,6 +867,36 @@ function Summary({ loading, data }: { loading: boolean; data?: SummaryData }) {
         <StatCard key={item.label} index={i} loading={loading} {...item} />
       ))}
     </div>
+  );
+}
+
+function OpportunityFunnel({ data }: { data?: SummaryData }) {
+  const stages = [
+    ["Raw", data?.candidatesDiscovered ?? 0],
+    ["Closed", data?.routableCandidates ?? 0],
+    ["Exact quote", data?.routesQuoted ?? 0],
+    ["Before gas +", data?.exactQuotePositive ?? 0],
+    ["Net +", data?.netProfitPositive ?? 0],
+    ["Ready for simulation", data?.readyForSimulation ?? 0],
+  ] as const;
+  return (
+    <section className="mb-8 rounded-2xl border border-border/70 bg-card/45 p-4 sm:p-5">
+      <div className="mb-3 flex items-center justify-between gap-4">
+        <div>
+          <div className="font-mono-tight text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Profitability funnel</div>
+          <div className="mt-1 font-mono-tight text-[12px] text-foreground">Live evidence, not synthetic positives</div>
+        </div>
+        <div className="font-mono-tight text-[9px] text-muted-foreground">final simulation runs in executor</div>
+      </div>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
+        {stages.map(([label, value], index) => (
+          <div key={label} className="rounded-xl border border-border/60 bg-background/30 px-3 py-2.5">
+            <div className="font-mono-tight text-[9px] uppercase text-muted-foreground">{index + 1}. {label}</div>
+            <div className="mt-1 font-mono-tight text-lg text-foreground">{number(value)}</div>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -1346,6 +1380,10 @@ function OpportunityCard({
       ? "Quote queued"
       : item.quoteStatus === "unavailable"
         ? "Unavailable"
+        : item.executionBlocker === "below-minimum-size"
+          ? "Capital too small"
+          : item.executionBlocker === "insufficient-liquidity"
+            ? "Liquidity too low"
         : item.executionBlocker === "negative-net"
           ? "No profit"
           : item.executionBlocker === "target-not-allowed"
@@ -1412,7 +1450,11 @@ function OpportunityCard({
             {evaluated
               ? `on ${money(item.profit.recommendedBorrowUsd, true)}`
               : item.quoteStatus === "estimated"
-                ? "awaiting exact quote"
+                ? item.executionBlocker === "below-minimum-size"
+                  ? "capacity below viable size"
+                  : item.executionBlocker === "insufficient-liquidity"
+                    ? "pool liquidity below route floor"
+                    : "awaiting exact quote"
                 : item.executionBlocker === "quote-failed"
                   ? "exact quote failed"
                   : "route not closed"}
@@ -1438,6 +1480,46 @@ function OpportunityCard({
         </span>
       </div>
     </motion.button>
+  );
+}
+
+function NearMisses({ data }: { data?: ArbitrageOpportunity[] }) {
+  const misses = useMemo(
+    () =>
+      (data ?? [])
+        .filter(
+          (item) =>
+            item.quoteStatus === "quoted" &&
+            item.profit.grossProfitUsd > 0 &&
+            item.profit.netProfitUsd <= 0,
+        )
+        .sort((a, b) => b.profit.netProfitUsd - a.profit.netProfitUsd)
+        .slice(0, 4),
+    [data],
+  );
+  return (
+    <section className="mb-5 rounded-2xl border border-warning/25 bg-warning/5 p-4 sm:p-5">
+      <div className="font-mono-tight text-[10px] uppercase tracking-[0.14em] text-warning">Top near-misses</div>
+      <div className="mt-1 font-mono-tight text-[11px] text-muted-foreground">Exact quotes with positive gross return, ranked by distance to net profitability.</div>
+      <div className="mt-3 grid gap-2 lg:grid-cols-2">
+        {misses.length ? misses.map((item, index) => (
+          <div key={item.id} className="flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-background/35 px-3 py-2.5 font-mono-tight">
+            <div className="min-w-0">
+              <div className="truncate text-[11px] text-foreground">#{index + 1} {item.pair}</div>
+              <div className="mt-1 truncate text-[9px] text-muted-foreground">{venueVersionLabel(item.buyVenue)} → {venueVersionLabel(item.sellVenue)}</div>
+            </div>
+            <div className="shrink-0 text-right">
+              <div className="text-[10px] text-foreground">gross {money(item.profit.grossProfitUsd)}</div>
+              <div className="mt-1 text-[10px] text-warning">net {money(item.profit.netProfitUsd)}</div>
+            </div>
+          </div>
+        )) : (
+          <div className="rounded-xl border border-border/60 bg-background/35 px-3 py-3 font-mono-tight text-[10px] text-muted-foreground lg:col-span-2">
+            No exact quoted near-miss in this snapshot. The funnel above shows whether this is due to quote coverage or no gross-positive routes.
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -1518,6 +1600,7 @@ function Opportunities({
         onRetry={retry}
         label="opportunities"
       >
+        <NearMisses data={filtered} />
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {filtered.map((item, i) => (
             <OpportunityCard
@@ -2704,6 +2787,7 @@ function Cockpit() {
             healthError={health.isError}
           />
           <Summary loading={summary.isLoading} data={summary.data} />
+          <OpportunityFunnel data={summary.data} />
           <ActivityChart
             opportunities={summary.data?.activeOpportunities}
             profit24h={summary.data?.estimatedNetProfit24h}

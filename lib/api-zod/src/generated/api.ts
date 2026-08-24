@@ -32,7 +32,11 @@ export const GetScannerSummaryResponse = zod.object({
   "routesQuoted": zod.number().describe('Complete routes that received an exact on-chain quote.'),
   "routesUnavailable": zod.number().describe('Routable candidates whose exact quote failed or was unavailable.'),
   "routeCoveragePct": zod.number().describe('Percentage of discovered candidates converted into complete routable cycles.'),
-  "quoteCoveragePct": zod.number().describe('Percentage of routable candidates with an exact quote in this scan.')
+  "quoteCoveragePct": zod.number().describe('Percentage of routable candidates with an exact quote in this scan.'),
+  "exactQuotePositive": zod.number().describe('Exact-quoted routes that clear principal, flash-loan premium, and configured slippage before gas.'),
+  "grossProfitPositive": zod.number().describe('Exact-quoted routes with gross output profit before costs.'),
+  "netProfitPositive": zod.number().describe('Exact-quoted routes with positive live-gas-screened net profit.'),
+  "readyForSimulation": zod.number().describe('Positive-net routes whose executor and target allow-list are ready for final simulation.')
 })
 
 
@@ -290,7 +294,7 @@ export const GetScannerOpportunitiesResponseItem = zod.object({
   "executable": zod.boolean(),
   "executorDeployed": zod.boolean().optional().describe('Whether this chain currently has a configured ArbExecutor deployment. False means exact-profit monitoring only.'),
   "quoteStatus": zod.enum(['estimated', 'quoted', 'unavailable']).optional().describe('Whether profit is only graph-estimated, fully quoted on-chain, or could not be quoted by a verified adapter.'),
-  "executionBlocker": zod.enum(['negative-net', 'executor-not-deployed', 'quote-budget', 'quote-failed', 'target-not-allowed', 'unsupported-or-open-route']).optional().describe('Concrete reason the route cannot currently be submitted. Omitted when no blocker remains.'),
+  "executionBlocker": zod.enum(['negative-net', 'executor-not-deployed', 'quote-budget', 'quote-failed', 'below-minimum-size', 'insufficient-liquidity', 'target-not-allowed', 'unsupported-or-open-route']).optional().describe('Concrete reason the route cannot currently be submitted. Omitted when no blocker remains.'),
   "status": zod.enum(['new', 'monitoring', 'stale'])
 })
 export const GetScannerOpportunitiesResponse = zod.array(GetScannerOpportunitiesResponseItem)
@@ -380,7 +384,7 @@ export const GetScannerOpportunityResponse = zod.object({
   "executable": zod.boolean(),
   "executorDeployed": zod.boolean().optional().describe('Whether this chain currently has a configured ArbExecutor deployment. False means exact-profit monitoring only.'),
   "quoteStatus": zod.enum(['estimated', 'quoted', 'unavailable']).optional().describe('Whether profit is only graph-estimated, fully quoted on-chain, or could not be quoted by a verified adapter.'),
-  "executionBlocker": zod.enum(['negative-net', 'executor-not-deployed', 'quote-budget', 'quote-failed', 'target-not-allowed', 'unsupported-or-open-route']).optional().describe('Concrete reason the route cannot currently be submitted. Omitted when no blocker remains.'),
+  "executionBlocker": zod.enum(['negative-net', 'executor-not-deployed', 'quote-budget', 'quote-failed', 'below-minimum-size', 'insufficient-liquidity', 'target-not-allowed', 'unsupported-or-open-route']).optional().describe('Concrete reason the route cannot currently be submitted. Omitted when no blocker remains.'),
   "status": zod.enum(['new', 'monitoring', 'stale'])
 })
 

@@ -434,6 +434,18 @@ components:
         quoteCoveragePct:
           type: number
           description: Percentage of routable candidates with an exact quote in this scan.
+        exactQuotePositive:
+          type: number
+          description: Exact-quoted routes that clear principal, flash-loan premium, and configured slippage before gas.
+        grossProfitPositive:
+          type: number
+          description: Exact-quoted routes with gross output profit before costs.
+        netProfitPositive:
+          type: number
+          description: Exact-quoted routes with positive live-gas-screened net profit.
+        readyForSimulation:
+          type: number
+          description: Positive-net routes whose executor and target allow-list are ready for final simulation.
       required:
         [
           activeOpportunities,
@@ -448,6 +460,10 @@ components:
           routesUnavailable,
           routeCoveragePct,
           quoteCoveragePct,
+          exactQuotePositive,
+          grossProfitPositive,
+          netProfitPositive,
+          readyForSimulation,
         ]
     NetworkStatus:
       type: object
@@ -834,6 +850,8 @@ components:
               executor-not-deployed,
               quote-budget,
               quote-failed,
+              below-minimum-size,
+              insufficient-liquidity,
               target-not-allowed,
               unsupported-or-open-route,
             ]
