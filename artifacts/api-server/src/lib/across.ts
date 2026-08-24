@@ -15,6 +15,8 @@ const DEFAULT_ACROSS_API_BASE_URL = "https://app.across.to/api";
 const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
 const HEX_RE = /^0x[a-fA-F0-9]*$/;
 const DEFAULT_ACROSS_SCAN_TOKENS = ["WETH", "USDC", "USDT", "DAI", "WBTC"];
+const DEFAULT_ACROSS_MEME_TOKENS = ["PEPE", "FLOKI", "MOG", "SHIB", "TURBO"];
+const MEME_SYMBOLS = new Set(DEFAULT_ACROSS_MEME_TOKENS);
 
 export type AcrossTradeType = "exactInput" | "minOutput";
 
@@ -348,7 +350,10 @@ function sanitizeCrossChainPrices(
     const minimum = Math.min(...values);
     const maximum = Math.max(...values);
     const price = median(values);
-    const corroborated = values.length >= 3 || maximum / minimum <= 1 + maxDeviation;
+    const permittedDeviation = isMemeToken(token)
+      ? envNumber("ACROSS_MEME_MAX_REFERENCE_DEVIATION_BPS", 2_500, 100, 5_000) / 10_000
+      : maxDeviation;
+    const corroborated = values.length >= 3 || maximum / minimum <= 1 + permittedDeviation;
     reference.set(token, { price, corroborated });
   }
   return new Map(
@@ -357,10 +362,13 @@ function sanitizeCrossChainPrices(
       new Map(
         [...markets.entries()].filter(([token, market]) => {
           const ref = reference.get(token);
+          const permittedDeviation = isMemeToken(token)
+            ? envNumber("ACROSS_MEME_MAX_REFERENCE_DEVIATION_BPS", 2_500, 100, 5_000) / 10_000
+            : maxDeviation;
           return Boolean(
             ref &&
               ref.corroborated &&
-              Math.abs(market.priceUsd / ref.price - 1) <= maxDeviation,
+              Math.abs(market.priceUsd / ref.price - 1) <= permittedDeviation,
           );
         }),
       ),
@@ -380,7 +388,17 @@ function acrossScanTokens(): Set<string> {
     ?.split(",")
     .map((value) => value.trim().toUpperCase())
     .filter(Boolean);
-  return new Set(configured?.length ? configured : DEFAULT_ACROSS_SCAN_TOKENS);
+  const tokens = configured?.length ? configured : DEFAULT_ACROSS_SCAN_TOKENS;
+  if (process.env["ACROSS_MEME_ENABLED"] !== "true") return new Set(tokens);
+  const memes = process.env["ACROSS_MEME_TOKENS"]
+    ?.split(",")
+    .map((value) => value.trim().toUpperCase())
+    .filter(Boolean);
+  return new Set([...tokens, ...(memes?.length ? memes : DEFAULT_ACROSS_MEME_TOKENS)]);
+}
+
+function isMemeToken(symbol: string): boolean {
+  return MEME_SYMBOLS.has(symbol.toUpperCase());
 }
 
 async function lightMarkets(chain: ChainId): Promise<LiveMarket[]> {
@@ -485,7 +503,15 @@ export async function scanAcrossOpportunities(force = false): Promise<AcrossOppo
           const destinationPrice = prices.get(destination)?.get(token.symbol.toUpperCase());
           if (!originPrice || !destinationPrice || !token.addresses[origin] || !token.addresses[destination]) continue;
           const spreadBps = ((destinationPrice.priceUsd / originPrice.priceUsd) - 1) * 10_000;
-          if (spreadBps < envNumber("ACROSS_MIN_SPREAD_BPS", 30, 1, 10_000)) continue;
+          const meme = isMemeToken(token.symbol);
+          const minLiquidityUsd = meme
+            ? envNumber("ACROSS_MEME_MIN_POOL_LIQUIDITY_USD", 250_000, 25_000, 100_000_000)
+            : envNumber("ACROSS_MIN_POOL_LIQUIDITY_USD", 25_000, 1_000, 100_000_000);
+          const minSpreadBps = meme
+            ? envNumber("ACROSS_MEME_MIN_SPREAD_BPS", 150, 1, 10_000)
+            : envNumber("ACROSS_MIN_SPREAD_BPS", 30, 1, 10_000);
+          if (originPrice.liquidityUsd < minLiquidityUsd || destinationPrice.liquidityUsd < minLiquidityUsd) continue;
+          if (spreadBps < minSpreadBps) continue;
           candidates.push({ token: token.symbol, origin, destination, originPrice, destinationPrice, spreadBps });
         }
       }
@@ -581,7 +607,11 @@ export async function scanAcrossOpportunities(force = false): Promise<AcrossOppo
           expectedFillTimeSeconds: quote.expectedFillTimeSeconds,
           netProfitUsd: profit.netProfitUsd,
           quoteStatus: "quoted",
-          profitable: profit.netProfitUsd > 0,
+          profitable: profit.netProfitUsd >= (
+            isMemeToken(candidate.token)
+              ? envNumber("ACROSS_MEME_MIN_NET_PROFIT_USD", 10, 0, 1_000_000)
+              : envNumber("ACROSS_MIN_NET_PROFIT_USD", 1, 0, 1_000_000)
+          ),
           executable: false,
           blocker: "cross-chain-inventory-required",
           detectedAt: startedAt,

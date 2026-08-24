@@ -385,6 +385,34 @@ export const TOKEN_DEFINITIONS: TokenDefinition[] = [
     "0x35E6A59F786d9266c7961eA28c7b768B33959cbB",
   ],
   [
+    "FLOKI",
+    "Floki",
+    9,
+    "0xcf0C122c6b73ff809C693DB761e7BaeBe62b6a2E",
+    "0xA8C25FdC09763A176353CC6a76882e05b4905FAe",
+  ],
+  [
+    "MOG",
+    "Mog Coin",
+    18,
+    "0xaaee1a9723aadb7afa2810263653a34ba2c21c7a",
+    "0x96c42662820F6Ea32f0A61A06a38a72B206aABaC",
+  ],
+  [
+    "SHIB",
+    "Shiba Inu",
+    18,
+    "0x95ad61b0a150d79219dcf64e1e6cc01f0b64c4ce",
+    "0x5033833c9fe8B9d3E09EEd2f73d2aaF7E3872fd1",
+  ],
+  [
+    "TURBO",
+    "Turbo",
+    18,
+    "0xA35923162C49cF95e6BF26623385eb431ad920D3",
+    "0x5C816d4582c857dcadb1bB1F62Ad6c9DEde4576a",
+  ],
+  [
     "USDC.E",
     "Bridged USDC",
     6,
@@ -510,6 +538,9 @@ const EXTRA_TOKEN_ADDRESSES: Record<
   },
   FRAX: { avalanche: "0xD24C2Ad096400B6FBcd2ad8B24E7acBc21A1da64" },
   AAVE: { base: "0x63706e401c06ac8513145b7687A14804d17f814b" },
+  PEPE: { optimism: "0xC1c167CC44f7923cd0062c4370Df962f9DDB16f5" },
+  FLOKI: { bsc: "0xfb5B838b6cfEEdC2873aB27866079AC55363D37E" },
+  TURBO: { optimism: "0x1E4339318EcE1d6D9d2Fb129b31C06b9F2d202A1" },
   "USDC.E": { soneium: "0xbA9986D2381edf1DA03B0B9c1f8b00dc4AacC369" },
 };
 

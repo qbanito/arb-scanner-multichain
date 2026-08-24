@@ -27,3 +27,13 @@ services:
         value: 1
       - key: ACROSS_SCAN_TOKENS
         value: WETH,USDC,USDT,DAI,WBTC
+      - key: ACROSS_MEME_ENABLED
+        value: true
+      - key: ACROSS_MEME_TOKENS
+        value: PEPE,FLOKI,MOG,SHIB,TURBO
+      - key: ACROSS_MEME_MIN_POOL_LIQUIDITY_USD
+        value: 250000
+      - key: ACROSS_MEME_MIN_SPREAD_BPS
+        value: 150
+      - key: ACROSS_MEME_MIN_NET_PROFIT_USD
+        value: 10
