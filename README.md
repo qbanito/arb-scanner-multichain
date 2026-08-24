@@ -178,6 +178,8 @@ The API exposes a quote-only Across layer:
 
 Configure `ACROSS_ENABLED=true`, `ACROSS_API_KEY` and `ACROSS_INTEGRATOR_ID` in the API server. Production Across requests require both credentials. The returned route remains `executable: false` with `cross-chain-inventory-required`: an Across fill is fast, but it is not an atomic continuation of an origin-chain flash loan. Live execution requires destination inventory, fill reconciliation and a separately audited settlement policy.
 
+The deployed allow-list covers the ten-network overlap currently modeled by the scanner and Across (Ethereum, Optimism, BNB Chain, Polygon, zkSync, Soneium, Linea, Base, Arbitrum and Avalanche). The opportunity snapshot is refreshed every 15 seconds while the API process is alive. A paid Render worker is required for an always-on background process; the free web tier can suspend when idle.
+
 Upstream data sources currently include:
 
 - JSON-RPC endpoints for block telemetry, pool state, router quotes, Aave premium, and gas.

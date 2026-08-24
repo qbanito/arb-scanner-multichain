@@ -20,4 +20,6 @@ services:
       - key: ACROSS_INTEGRATOR_ID
         sync: false
       - key: ACROSS_ALLOWED_CHAIN_IDS
-        value: 1,10,56,137,8453,42161,43114
+        value: 1,10,56,137,324,1868,59144,8453,42161,43114
+      - key: ACROSS_MAX_CHAINS
+        value: 10
