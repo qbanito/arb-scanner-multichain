@@ -77,14 +77,20 @@ function quoteFailureReason(error: unknown): string {
     .slice(0, 180) || "unknown quote failure";
 }
 
+type QuoteBlockRef = bigint | "pending";
+
 function readAtBlock(
   client: any,
   request: Record<string, unknown>,
-  blockNumber?: bigint,
+  blockRef?: QuoteBlockRef,
 ) {
   return client.readContract({
     ...request,
-    ...(blockNumber === undefined ? {} : { blockNumber }),
+    ...(blockRef === undefined
+      ? {}
+      : blockRef === "pending"
+        ? { blockTag: "pending" }
+        : { blockNumber: blockRef }),
   });
 }
 
@@ -243,7 +249,7 @@ async function quoteCurvePool(
   tokenIn: `0x${string}`,
   tokenOut: `0x${string}`,
   amountIn: bigint,
-  blockNumber?: bigint,
+  blockRef?: QuoteBlockRef,
 ): Promise<bigint> {
   const coins = await curveCoins(client, chainId, pool);
   const i = coins.indexOf(tokenIn.toLowerCase());
@@ -256,7 +262,7 @@ async function quoteCurvePool(
     abi: kind === "int128" ? curveAbi : curveUintAbi,
     functionName: "get_dy",
     args: [BigInt(i), BigInt(j), amountIn],
-  }, blockNumber) as Promise<bigint>;
+  }, blockRef) as Promise<bigint>;
   if (cachedKind) return tryKind(cachedKind);
   try {
     const amountOut = await tryKind("int128");
@@ -276,7 +282,7 @@ async function quoteBalancerPool(
   tokenIn: `0x${string}`,
   tokenOut: `0x${string}`,
   amountIn: bigint,
-  blockNumber?: bigint,
+  blockRef?: QuoteBlockRef,
 ): Promise<bigint> {
   const vault = BALANCER_V2_VAULTS[chainId];
   if (!vault) throw new Error("Balancer V2 is not registered on this chain");
@@ -298,13 +304,13 @@ async function quoteBalancerPool(
       [tokenIn, tokenOut],
       { sender: zero, fromInternalBalance: false, recipient: zero, toInternalBalance: false },
     ],
-  }, blockNumber) as readonly bigint[];
+  }, blockRef) as readonly bigint[];
   const outputDelta = deltas[1];
   if (outputDelta === undefined || outputDelta >= 0n) throw new Error("invalid Balancer output delta");
   return -outputDelta;
 }
 
-async function quoteVenue(client: any, chainId: number, venue: Venue, tokenIn: `0x${string}`, tokenOut: `0x${string}`, amountIn: bigint, blockNumber?: bigint): Promise<bigint> {
+async function quoteVenue(client: any, chainId: number, venue: Venue, tokenIn: `0x${string}`, tokenOut: `0x${string}`, amountIn: bigint, blockRef?: QuoteBlockRef): Promise<bigint> {
   // Indexers occasionally return mixed-case addresses whose checksum casing
   // is not canonical. Lowercase is an unambiguous EVM address and prevents
   // viem from rejecting an otherwise valid pool/token before eth_call.
@@ -324,7 +330,7 @@ async function quoteVenue(client: any, chainId: number, venue: Venue, tokenIn: `
       abi: syncSwapPoolAbi,
       functionName: "getAmountOut",
       args: [tokenIn, amountIn, "0x0000000000000000000000000000000000000000"],
-    }, blockNumber);
+    }, blockRef);
   }
   if (dex === "lynex") {
     if (chainId !== 59144) throw new Error("unsupported Lynex deployment");
@@ -332,7 +338,7 @@ async function quoteVenue(client: any, chainId: number, venue: Venue, tokenIn: `
     if (factory.toLowerCase() !== LYNEX_ALGEBRA_FACTORY.toLowerCase()) throw new Error("unverified Lynex Algebra factory");
     const quoter = QUOTERS[chainId]?.lynex;
     if (!quoter) throw new Error("missing Lynex quoter");
-    return (await readAtBlock(client, { address: quoter, abi: algebraQuoterAbi, functionName: "quoteExactInputSingle", args: [tokenIn, tokenOut, amountIn, 0n] }, blockNumber))[0];
+    return (await readAtBlock(client, { address: quoter, abi: algebraQuoterAbi, functionName: "quoteExactInputSingle", args: [tokenIn, tokenOut, amountIn, 0n] }, blockRef))[0];
   }
   if (dex === "agni") {
     if (chainId !== 5000) throw new Error("unsupported Agni deployment");
@@ -340,10 +346,10 @@ async function quoteVenue(client: any, chainId: number, venue: Venue, tokenIn: `
     if (factory.toLowerCase() !== AGNI_FACTORY.toLowerCase()) throw new Error("unverified Agni factory");
   }
   if (dex === "curve") {
-    return quoteCurvePool(client, chainId, pairAddress, tokenIn, tokenOut, amountIn, blockNumber);
+    return quoteCurvePool(client, chainId, pairAddress, tokenIn, tokenOut, amountIn, blockRef);
   }
   if (dex === "balancer") {
-    return quoteBalancerPool(client, chainId, pairAddress, tokenIn, tokenOut, amountIn, blockNumber);
+    return quoteBalancerPool(client, chainId, pairAddress, tokenIn, tokenOut, amountIn, blockRef);
   }
   if (dex === "traderjoe" || dex === "lfj") {
     const pair = pairAddress;
@@ -362,14 +368,14 @@ async function quoteVenue(client: any, chainId: number, venue: Venue, tokenIn: `
       abi: liquidityBookPairAbi,
       functionName: "getSwapOut",
       args: [amountIn, swapForY],
-    }, blockNumber);
+    }, blockRef);
     if (amountInLeft !== 0n || amountOut === 0n) throw new Error("insufficient Liquidity Book depth");
     return amountOut;
   }
   if (dex === "velodrome" || dex === "aerodrome") {
     const pool = pairAddress;
     try {
-      return await readAtBlock(client, { address: pool, abi: solidlyPoolAbi, functionName: "getAmountOut", args: [amountIn, tokenIn] }, blockNumber);
+      return await readAtBlock(client, { address: pool, abi: solidlyPoolAbi, functionName: "getAmountOut", args: [amountIn, tokenIn] }, blockRef);
     } catch {
       const [factory, tickSpacing] = await Promise.all([
         client.readContract({ address: pool, abi: slipstreamPoolAbi, functionName: "factory" }) as Promise<string>,
@@ -382,14 +388,14 @@ async function quoteVenue(client: any, chainId: number, venue: Venue, tokenIn: `
         abi: slipstreamQuoterV2Abi,
         functionName: "quoteExactInputSingle",
         args: [{ tokenIn, tokenOut, amountIn, tickSpacing, sqrtPriceLimitX96: 0n }],
-      }, blockNumber))[0];
+      }, blockRef))[0];
     }
   }
   const routerKey = (dex === "uniswap" || dex === "pancakeswap") && labels.has("v2") ? `${dex}-v2` : dex;
   const router = ROUTERS[chainId]?.[routerKey];
   if (!router) throw new Error("unsupported venue");
   if ((dex === "uniswap" || dex === "pancakeswap") && labels.has("v2") || dex === "sushiswap" && !labels.has("v3") || dex === "camelot") {
-    const amounts = await readAtBlock(client, { address: router, abi: v2RouterAbi, functionName: "getAmountsOut", args: [amountIn, [tokenIn, tokenOut]] }, blockNumber);
+    const amounts = await readAtBlock(client, { address: router, abi: v2RouterAbi, functionName: "getAmountsOut", args: [amountIn, [tokenIn, tokenOut]] }, blockRef);
     if (!amounts[1]) throw new Error("empty quote");
     return amounts[1];
   }
@@ -397,9 +403,9 @@ async function quoteVenue(client: any, chainId: number, venue: Venue, tokenIn: `
   const quoter = QUOTERS[chainId]?.[dex];
   if (!quoter) throw new Error("missing quoter");
   if (dex === "pancakeswap" || dex === "sushiswap" || dex === "agni" || dex === "uniswap" && UNISWAP_QUOTER_V2_CHAINS.has(chainId)) {
-    return (await readAtBlock(client, { address: quoter, abi: v3QuoterV2Abi, functionName: "quoteExactInputSingle", args: [{ tokenIn, tokenOut, amountIn, fee, sqrtPriceLimitX96: 0n }] }, blockNumber))[0];
+    return (await readAtBlock(client, { address: quoter, abi: v3QuoterV2Abi, functionName: "quoteExactInputSingle", args: [{ tokenIn, tokenOut, amountIn, fee, sqrtPriceLimitX96: 0n }] }, blockRef))[0];
   }
-  return readAtBlock(client, { address: quoter, abi: v3QuoterAbi, functionName: "quoteExactInputSingle", args: [tokenIn, tokenOut, fee, amountIn, 0n] }, blockNumber);
+  return readAtBlock(client, { address: quoter, abi: v3QuoterAbi, functionName: "quoteExactInputSingle", args: [tokenIn, tokenOut, fee, amountIn, 0n] }, blockRef);
 }
 
 export type ClosedRouteQuote = { borrowUsd: number; grossProfitUsd: number; flashLoanFeeUsd: number; slippageUsd: number; netBeforeGasUsd: number };
@@ -409,7 +415,7 @@ function sizingRefinementIterations(): number {
   return Number.isFinite(parsed) ? Math.min(10, Math.max(0, parsed)) : 4;
 }
 
-export async function quoteClosedRoute(client: any, args: { chainId: number; tokenAddress: string; tokenDecimals: number; buyQuoteAddress: string; buyQuoteDecimals: number; sellQuoteAddress: string; sellQuoteDecimals: number; buy: Venue; sell: Venue; maxBorrowUsd: number; minBorrowUsd?: number; preferredBorrowUsd?: readonly number[]; slippageBps: number; borrowTokenPriceUsd?: number; blockNumber?: bigint; onFailure?: (diagnostic: QuoteFailureDiagnostic) => void }): Promise<ClosedRouteQuote | null> {
+export async function quoteClosedRoute(client: any, args: { chainId: number; tokenAddress: string; tokenDecimals: number; buyQuoteAddress: string; buyQuoteDecimals: number; sellQuoteAddress: string; sellQuoteDecimals: number; buy: Venue; sell: Venue; maxBorrowUsd: number; minBorrowUsd?: number; preferredBorrowUsd?: readonly number[]; slippageBps: number; borrowTokenPriceUsd?: number; blockNumber?: bigint; blockTag?: "pending"; onFailure?: (diagnostic: QuoteFailureDiagnostic) => void }): Promise<ClosedRouteQuote | null> {
   const borrowTokenPriceUsd = args.borrowTokenPriceUsd ?? 1;
   if (!Number.isFinite(borrowTokenPriceUsd) || borrowTokenPriceUsd <= 0) return null;
   const premiumBps = await flashLoanPremiumBps(client, args.chainId);
@@ -428,16 +434,17 @@ export async function quoteClosedRoute(client: any, args: { chainId: number; tok
           borrowTokenAmount.toFixed(args.buyQuoteDecimals),
           args.buyQuoteDecimals,
         );
-        const bought = await quoteVenue(client, args.chainId, args.buy, args.buyQuoteAddress as `0x${string}`, args.tokenAddress as `0x${string}`, amountIn, args.blockNumber);
+        const blockRef = args.blockTag ?? args.blockNumber;
+        const bought = await quoteVenue(client, args.chainId, args.buy, args.buyQuoteAddress as `0x${string}`, args.tokenAddress as `0x${string}`, amountIn, blockRef);
         activeAdapter = args.sell.dexId;
-        const sold = await quoteVenue(client, args.chainId, args.sell, args.tokenAddress as `0x${string}`, args.sellQuoteAddress as `0x${string}`, bought, args.blockNumber);
+        const sold = await quoteVenue(client, args.chainId, args.sell, args.tokenAddress as `0x${string}`, args.sellQuoteAddress as `0x${string}`, bought, blockRef);
         let finalOut = sold;
         if (args.sellQuoteAddress.toLowerCase() !== args.buyQuoteAddress.toLowerCase()) {
           const i = THREE_POOL_COINS.findIndex((coin) => coin.toLowerCase() === args.sellQuoteAddress.toLowerCase());
           const j = THREE_POOL_COINS.findIndex((coin) => coin.toLowerCase() === args.buyQuoteAddress.toLowerCase());
           if (args.chainId !== 1 || i < 0 || j < 0) return null;
           activeAdapter = "curve-3pool";
-          finalOut = await readAtBlock(client, { address: ETHEREUM_3POOL, abi: curveAbi, functionName: "get_dy", args: [BigInt(i), BigInt(j), sold] }, args.blockNumber);
+          finalOut = await readAtBlock(client, { address: ETHEREUM_3POOL, abi: curveAbi, functionName: "get_dy", args: [BigInt(i), BigInt(j), sold] }, blockRef);
         }
         const premium = amountIn * premiumBps / 10_000n;
         const gross =
@@ -484,6 +491,7 @@ export async function quoteAtomicCycle(client: any, args: {
   preferredBorrowUsd?: readonly number[];
   slippageBps: number;
   blockNumber?: bigint;
+  blockTag?: "pending";
   onFailure?: (diagnostic: QuoteFailureDiagnostic) => void;
 }): Promise<ClosedRouteQuote | null> {
   if (args.legs.length < 2 || args.legs.length > 6) return null;
@@ -519,7 +527,7 @@ export async function quoteAtomicCycle(client: any, args: {
             leg.tokenInAddress as `0x${string}`,
             leg.tokenOutAddress as `0x${string}`,
             amount,
-            args.blockNumber,
+            args.blockTag ?? args.blockNumber,
           );
           amount = quoted;
         }

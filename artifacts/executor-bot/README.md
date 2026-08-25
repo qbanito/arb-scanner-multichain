@@ -28,13 +28,34 @@ Each poll cycle (`POLL_INTERVAL_MS`) or block-triggered evaluation
    stable-token registry or the configured price oracle.
 4. Skip if any route leg lacks a verified adapter in `dexRegistry.ts`.
 5. Optimize the executable borrow amount continuously, build the route
-   (`routeBuilder.ts`), quote every hop on-chain, and feed each
-   next leg only the prior leg's discounted minimum output.
+   (`routeBuilder.ts`), quote every hop on-chain, and feed each next leg the
+   prior leg's exact same-state output. Slippage is a final settlement/revert
+   boundary, not a fictitious fee charged at every hop.
 6. `simulateContract` the whole `initiateArbitrage` call — this is a real
    `eth_call`, it catches reverts (stale price, insufficient allow-listed
    targets, profit floor not met) without spending gas or touching funds.
 7. If simulation succeeds and `ENABLE_LIVE_EXECUTION=true`: send it, wait for
    the receipt, log the result. Otherwise: log "would execute" and move on.
+
+### Private order flow and Flashblocks
+
+- **Ethereum MEV-Share**: `ENABLE_MEV_SHARE_HINTS=true` listens to the
+  official hint stream. A hint is eligible only when a disclosed log/target
+  address matches one of the opportunity's pools. The bot signs the
+  arbitrage locally, jointly simulates `{ target hash -> backrun tx }` with
+  `mev_simBundle`, and only then submits the same body with `mev_sendBundle`.
+  A failed joint simulation never falls through to a public transaction.
+- **BNB BackRunMe**: `ENABLE_BLOXROUTE_BACKRUNME=true` consumes bloXroute's
+  BSC `arbOnlyMEV` feed and uses `simulate_arb_only_bundle` before
+  `submit_arb_only_bundle`. This feed requires an approved Enterprise-Elite
+  BackRunMe account and `BLOXROUTE_AUTH_HEADER`; without both, logs explicitly
+  report standby and no private-order-flow claim is made.
+- **Base Flashblocks**: Base exact quotes use the pre-confirmed `pending`
+  state. The executor subscribes to the Flashblocks WSS feed, simulates on
+  `pending`, and sends signed transactions through the preconf HTTP endpoint.
+  `FLASHBLOCKS_MIN_TICK_GAP_MS` controls the sub-second wake-up floor. The
+  public Base endpoints are rate-limited, so production should set dedicated
+  provider URLs.
 
 The on-chain `minProfit` floor is set in basis points of the borrowed amount
 (`MIN_PROFIT_BPS_ON_CHAIN`), not an absolute USD figure — see the comment in
@@ -163,11 +184,13 @@ prices move beyond the configured budget.
    time it lands, the whole transaction reverts and you lose only gas, never
    principal. That backstop only works because it's enforced in the
    contract, not in this bot — don't bypass it.
-5. On Ethereum, configure `FLASHBOTS_PROTECT_RPC_URL` to route final signed
-   transactions through private order flow. `ENABLE_MEV_SHARE_HINTS=true`
-   can additionally wake the scanner from the MEV-Share event stream. Hints
-   are an early-warning signal, not a target-aware backrun bundle; the bot
-   never labels or submits one without joint post-target simulation.
+5. On Ethereum, configure `FLASHBOTS_PROTECT_RPC_URL` for ordinary private
+   sends. `ENABLE_MEV_SHARE_HINTS=true` separately enables target-aware
+   matched bundles; those are always jointly simulated before submission.
+6. On BNB, do not enable BackRunMe until bloXroute has approved the account
+   and issued the authorization header. On Base, replace the public
+   Flashblocks endpoints with production-capacity provider URLs before
+   sustained sub-second scanning.
 
 ## Run
 

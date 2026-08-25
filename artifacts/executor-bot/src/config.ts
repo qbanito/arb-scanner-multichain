@@ -29,6 +29,7 @@ const envSchema = z.object({
   OPTIMISM_RPC_URL: z.string().url().optional(),
   POLYGON_RPC_URL: z.string().url().optional(),
   BASE_RPC_URL: z.string().url().optional(),
+  BASE_FLASHBLOCKS_RPC_URL: z.string().url().optional(),
   AVALANCHE_RPC_URL: z.string().url().optional(),
   BSC_RPC_URL: z.string().url().optional(),
   CELO_RPC_URL: z.string().url().optional(),
@@ -43,6 +44,7 @@ const envSchema = z.object({
   OPTIMISM_WS_URL: z.string().url().optional(),
   POLYGON_WS_URL: z.string().url().optional(),
   BASE_WS_URL: z.string().url().optional(),
+  BASE_FLASHBLOCKS_WS_URL: z.string().url().optional(),
   AVALANCHE_WS_URL: z.string().url().optional(),
   BSC_WS_URL: z.string().url().optional(),
   CELO_WS_URL: z.string().url().optional(),
@@ -105,6 +107,23 @@ const envSchema = z.object({
     .string()
     .url()
     .default("https://mev-share.flashbots.net"),
+  MEV_SHARE_RELAY_URL: z
+    .string()
+    .url()
+    .default("https://relay.flashbots.net"),
+  BLOXROUTE_AUTH_HEADER: z.string().min(1).optional(),
+  ENABLE_BLOXROUTE_BACKRUNME: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
+  BLOXROUTE_BACKRUNME_WS_URL: z
+    .string()
+    .url()
+    .default("wss://backrunme.blxrbdn.com/ws"),
+  BLOXROUTE_BACKRUNME_RPC_URL: z
+    .string()
+    .url()
+    .default("https://backrunme.blxrbdn.com"),
 
   // Safety-first defaults: no live transactions, small size, generous profit
   // floor, and a hard cap on trade frequency. See README.md before changing.
@@ -147,6 +166,11 @@ const envSchema = z.object({
     .max(120_000)
     .default(60_000),
   MIN_TICK_GAP_MS: z.coerce.number().int().min(250).default(1_000),
+  FLASHBLOCKS_MIN_TICK_GAP_MS: z.coerce
+    .number()
+    .int()
+    .min(200)
+    .default(250),
   SLIPPAGE_BPS: z.coerce.number().int().nonnegative().default(50),
   // Profit is swept after every confirmed trade so an old balance can never
   // subsidize a later losing route. On BNB Chain, a bounded part of that
@@ -262,14 +286,24 @@ export function loadConfig() {
     };
   }
 
+  if (env.BASE_FLASHBLOCKS_RPC_URL || env.BASE_RPC_URL) {
+    chains[8453] = {
+      rpcUrl:
+        env.BASE_FLASHBLOCKS_RPC_URL ??
+        "https://mainnet-preconf.base.org",
+      fallbackRpcUrl:
+        env.BASE_RPC_URL_FALLBACK ??
+        env.BASE_RPC_URL ??
+        DEFAULT_FALLBACK_RPC_URL[8453]!,
+      wsUrl:
+        env.BASE_FLASHBLOCKS_WS_URL ??
+        env.BASE_WS_URL ??
+        "wss://mainnet-preconf.base.org",
+      executorAddress: env.ARB_EXECUTOR_BASE ?? null,
+    };
+  }
+
   const optionalChains = [
-    [
-      8453,
-      env.BASE_RPC_URL,
-      env.BASE_RPC_URL_FALLBACK,
-      env.BASE_WS_URL,
-      env.ARB_EXECUTOR_BASE,
-    ],
     [
       43114,
       env.AVALANCHE_RPC_URL,
@@ -404,6 +438,7 @@ export function loadConfig() {
     pollIntervalMs: env.POLL_INTERVAL_MS,
     scannerRequestTimeoutMs: env.SCANNER_REQUEST_TIMEOUT_MS,
     minTickGapMs: env.MIN_TICK_GAP_MS,
+    flashblocksMinTickGapMs: env.FLASHBLOCKS_MIN_TICK_GAP_MS,
     slippageBps: env.SLIPPAGE_BPS,
     autoGasReserve: env.AUTO_GAS_RESERVE,
     bscGasReserveTriggerWei,
@@ -415,5 +450,10 @@ export function loadConfig() {
     flashbotsProtectRpcUrl: env.FLASHBOTS_PROTECT_RPC_URL,
     enableMevShareHints: env.ENABLE_MEV_SHARE_HINTS,
     mevShareStreamUrl: env.MEV_SHARE_STREAM_URL,
+    mevShareRelayUrl: env.MEV_SHARE_RELAY_URL,
+    bloxrouteAuthHeader: env.BLOXROUTE_AUTH_HEADER,
+    enableBloxrouteBackrunme: env.ENABLE_BLOXROUTE_BACKRUNME,
+    bloxrouteBackrunmeWsUrl: env.BLOXROUTE_BACKRUNME_WS_URL,
+    bloxrouteBackrunmeRpcUrl: env.BLOXROUTE_BACKRUNME_RPC_URL,
   };
 }

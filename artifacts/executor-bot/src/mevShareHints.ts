@@ -1,10 +1,42 @@
 import { logger } from "./logger";
+import { keccak256, toBytes } from "viem";
 
 export type MevShareHint = {
   hash: `0x${string}`;
-  logs?: unknown[];
+  logs?: Array<{ address?: string; topics?: unknown[]; data?: string }>;
   txs?: Array<{ to?: string; functionSelector?: string; callData?: string }>;
 };
+
+/** Addresses disclosed by the hint, normalized for route/pool matching. */
+export function mevShareHintAddresses(hint: MevShareHint): Set<string> {
+  const addresses = new Set<string>();
+  for (const log of hint.logs ?? []) {
+    if (typeof log?.address === "string" && /^0x[a-fA-F0-9]{40}$/.test(log.address))
+      addresses.add(log.address.toLowerCase());
+  }
+  for (const tx of hint.txs ?? []) {
+    if (typeof tx?.to === "string" && /^0x[a-fA-F0-9]{40}$/.test(tx.to))
+      addresses.add(tx.to.toLowerCase());
+  }
+  return addresses;
+}
+
+const SWAP_TOPICS = new Set(
+  [
+    "Swap(address,uint256,uint256,uint256,uint256,address)",
+    "Swap(address,address,int256,int256,uint160,uint128,int24)",
+    "TokenExchange(address,int128,uint256,int128,uint256)",
+    "TokenExchangeUnderlying(address,int128,uint256,int128,uint256)",
+    "Swap(bytes32,address,address,uint256,uint256)",
+  ].map((signature) => keccak256(toBytes(signature)).toLowerCase()),
+);
+
+export function isPotentialSwapHint(hint: MevShareHint): boolean {
+  return (hint.logs ?? []).some((log) => {
+    const topic0 = log.topics?.[0];
+    return typeof topic0 === "string" && SWAP_TOPICS.has(topic0.toLowerCase());
+  });
+}
 
 /** Incrementally decodes standards-compliant SSE data frames. */
 export function decodeSseChunk(buffer: string, chunk: string): { events: unknown[]; remainder: string } {

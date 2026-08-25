@@ -1,12 +1,23 @@
 import type { ArbitrageOpportunity } from "@workspace/api-zod";
-import { formatUnits } from "viem";
+import { encodeFunctionData, formatUnits, keccak256 } from "viem";
 import { aavePoolPremiumAbi, arbExecutorAbi } from "./abis";
+import {
+  simulateAndSubmitBloxrouteBackrun,
+  watchBloxrouteBackrunme,
+  type BloxrouteBackrunSignal,
+} from "./bloxrouteBackrun";
 import type { ChainClients } from "./chains";
 import type { Config } from "./config";
 import { checkGasVsProfit } from "./gasGuard";
+import { simulateAndSendMevShareBackrun } from "./flashbotsBackrun";
 import { TradeLimiter } from "./limiter";
 import { logger } from "./logger";
-import { watchMevShareHints } from "./mevShareHints";
+import {
+  mevShareHintAddresses,
+  isPotentialSwapHint,
+  watchMevShareHints,
+  type MevShareHint,
+} from "./mevShareHints";
 import { nativeEthAmountToUsd } from "./priceOracle";
 import {
   estimateSettlementGasBudgetWei,
@@ -27,7 +38,7 @@ import {
   minimumGasBalance,
   routeTargetsAllowed,
 } from "./readiness";
-import { optimizeUsdSize } from "./sizing";
+import { optimizeUsdSize, resolveBorrowAmount } from "./sizing";
 
 export async function runLoop(
   config: Config,
@@ -54,6 +65,8 @@ export async function runLoop(
       scannerRequestTimeoutMs: config.scannerRequestTimeoutMs,
       minTickGapMs: config.minTickGapMs,
       mevShareHints: config.enableMevShareHints,
+      bloxrouteBackrunme: config.enableBloxrouteBackrunme,
+      bloxrouteCredentialsReady: Boolean(config.bloxrouteAuthHeader),
       autoGasReserve: config.autoGasReserve,
       bscGasReserveTriggerWei: config.bscGasReserveTriggerWei.toString(),
       bscGasReserveTargetWei: config.bscGasReserveTargetWei.toString(),
@@ -69,13 +82,21 @@ export async function runLoop(
   // forbidden so one account can never race itself for a nonce.
   const ticking = new Set<number>();
   const lastTickAt = new Map<number, number>();
-  const runTickSafely = (chainId: number, trigger: string) => {
+  const runTickSafely = (
+    chainId: number,
+    trigger: string,
+    signal?: TickSignal,
+  ) => {
     if (ticking.has(chainId)) return;
-    if (Date.now() - (lastTickAt.get(chainId) ?? 0) < config.minTickGapMs)
+    const minTickGapMs =
+      chainId === 8453
+        ? config.flashblocksMinTickGapMs
+        : config.minTickGapMs;
+    if (Date.now() - (lastTickAt.get(chainId) ?? 0) < minTickGapMs)
       return;
     ticking.add(chainId);
     lastTickAt.set(chainId, Date.now());
-    tick(config, chainClients, limiter, runtime, chainId)
+    tick(config, chainClients, limiter, runtime, chainId, signal)
       .catch((err) =>
         logger.error(
           { err, trigger, chainId },
@@ -110,10 +131,48 @@ export async function runLoop(
   if (config.enableMevShareHints) {
     void watchMevShareHints(config.mevShareStreamUrl, (hint) => {
       logger.debug({ hash: hint.hash }, "MEV-Share hint received");
+      if (!isPotentialSwapHint(hint)) return;
       if (chainClients.clients.has(1))
-        runTickSafely(1, `mev-share:${hint.hash}`);
+        runTickSafely(1, `mev-share:${hint.hash}`, {
+          kind: "mev-share",
+          hint,
+        });
     }).catch((err) =>
       logger.error({ err }, "MEV-Share watcher stopped unexpectedly"),
+    );
+  }
+
+  if (
+    config.enableBloxrouteBackrunme &&
+    config.bloxrouteAuthHeader &&
+    chainClients.clients.has(56)
+  ) {
+    void watchBloxrouteBackrunme({
+      wsUrl: config.bloxrouteBackrunmeWsUrl,
+      authorization: config.bloxrouteAuthHeader,
+      onSignal: (backrunSignal) => {
+        logger.debug(
+          {
+            targetHash: backrunSignal.targetHash,
+            nextBlockNumber: backrunSignal.nextBlockNumber.toString(),
+          },
+          "bloXroute BSC private backrun target received",
+        );
+        runTickSafely(56, `bloxroute:${backrunSignal.targetHash}`, {
+          kind: "bloxroute-bsc",
+          signal: backrunSignal,
+        });
+      },
+    }).catch((err) =>
+      logger.error({ err }, "bloXroute BackRunMe watcher stopped unexpectedly"),
+    );
+  } else if (config.enableBloxrouteBackrunme) {
+    logger.warn(
+      {
+        bscConfigured: chainClients.clients.has(56),
+        authorizationConfigured: Boolean(config.bloxrouteAuthHeader),
+      },
+      "bloXroute BackRunMe standing by — BSC and an approved auth header are required",
     );
   }
 
@@ -145,6 +204,54 @@ const CHAIN_QUERY_NAMES: Record<number, string> = {
 };
 
 type RuntimeState = { readinessSignatures: Map<number, string> };
+type TickSignal =
+  | { kind: "mev-share"; hint: MevShareHint }
+  | { kind: "bloxroute-bsc"; signal: BloxrouteBackrunSignal };
+
+function tickSignalAddresses(signal: TickSignal): Set<string> {
+  return signal.kind === "mev-share"
+    ? mevShareHintAddresses(signal.hint)
+    : signal.signal.addresses;
+}
+
+function tickSignalTargetHash(signal: TickSignal) {
+  return signal.kind === "mev-share"
+    ? signal.hint.hash
+    : signal.signal.targetHash;
+}
+
+function opportunityRelevantAddresses(opportunity: ArbitrageOpportunity) {
+  return new Set(
+    [
+      opportunity.buyVenue.pairAddress,
+      opportunity.sellVenue.pairAddress,
+      opportunity.tokenAddress,
+      opportunity.buyVenue.quoteTokenAddress,
+      opportunity.sellVenue.quoteTokenAddress,
+      ...(opportunity.routeLegs ?? []).map((leg) => leg.venue.pairAddress),
+      ...(opportunity.routeLegs ?? []).flatMap((leg) => [
+        leg.tokenInAddress,
+        leg.tokenOutAddress,
+      ]),
+    ]
+      .filter((address): address is string => typeof address === "string")
+      .map((address) => address.toLowerCase()),
+  );
+}
+
+function privateSignalMatchScore(
+  opportunity: ArbitrageOpportunity,
+  addresses: Set<string> | null,
+) {
+  if (!addresses) return 0;
+  const pools = [
+    opportunity.buyVenue.pairAddress,
+    opportunity.sellVenue.pairAddress,
+    ...(opportunity.routeLegs ?? []).map((leg) => leg.venue.pairAddress),
+  ].map((address) => address.toLowerCase());
+  if (pools.some((address) => addresses.has(address))) return 2;
+  return 1;
+}
 
 async function tick(
   config: Config,
@@ -152,6 +259,7 @@ async function tick(
   limiter: TradeLimiter,
   runtime: RuntimeState,
   chainId: number,
+  signal?: TickSignal,
 ): Promise<void> {
   if (config.enableLiveExecution) {
     const readiness = await getExecutionReadiness(
@@ -200,29 +308,59 @@ async function tick(
       ? fetchExecutionRequests(config.apiBaseUrl)
       : Promise.resolve(new Set<string>()),
   ]);
+  const hintedAddresses = signal ? tickSignalAddresses(signal) : null;
+  if (hintedAddresses && hintedAddresses.size === 0) {
+    logger.debug(
+      { targetHash: tickSignalTargetHash(signal!) },
+      "skip private order-flow signal: no pool or target address was disclosed",
+    );
+    return;
+  }
   const candidates = opportunities
     .filter(
       (opp) =>
-        opp.executable &&
-        opp.profit.netProfitUsd >=
-          (config.minProfitUsdByChain[opp.chainId] ?? config.minProfitUsd),
+        signal
+          ? opp.executable ||
+            (opp.quoteStatus === "quoted" &&
+              opp.executionBlocker === "negative-net" &&
+              opp.profit.recommendedBorrowUsd > 0)
+          : opp.executable &&
+            opp.profit.netProfitUsd >=
+              (config.minProfitUsdByChain[opp.chainId] ?? config.minProfitUsd),
     )
     .filter((opp) => chainClients.clients.has(opp.chainId))
+    .filter((opp) => {
+      if (!hintedAddresses) return true;
+      for (const address of opportunityRelevantAddresses(opp))
+        if (hintedAddresses.has(address)) return true;
+      return false;
+    })
     .filter((opp) => !config.requireManualExecution || requested.has(opp.id))
     .sort(
       (a, b) =>
+        privateSignalMatchScore(b, hintedAddresses) -
+          privateSignalMatchScore(a, hintedAddresses) ||
         Number(requested.has(b.id)) - Number(requested.has(a.id)) ||
         Number(b.chainId === 56) - Number(a.chainId === 56) ||
         b.profit.netProfitUsd - a.profit.netProfitUsd,
     );
 
   logger.debug(
-    { total: opportunities.length, candidates: candidates.length },
+    {
+      total: opportunities.length,
+      candidates: candidates.length,
+      signal: signal?.kind ?? "normal",
+      targetHash: signal ? tickSignalTargetHash(signal) : undefined,
+    },
     "poll cycle",
   );
 
-  for (const opportunity of candidates) {
-    await evaluate(config, chainClients, limiter, opportunity);
+  // A private target has one short inclusion window and one backrun slot.
+  // Evaluate the strongest pool/token match rather than signing several
+  // competing transactions with the same account nonce.
+  const evaluationCandidates = signal ? candidates.slice(0, 1) : candidates;
+  for (const opportunity of evaluationCandidates) {
+    await evaluate(config, chainClients, limiter, opportunity, signal);
     if (requested.has(opportunity.id))
       await completeExecutionRequest(config.apiBaseUrl, opportunity.id);
   }
@@ -233,6 +371,7 @@ async function evaluate(
   chainClients: ChainClients,
   limiter: TradeLimiter,
   opportunity: ArbitrageOpportunity,
+  signal?: TickSignal,
 ): Promise<void> {
   const log = logger.child({
     opportunityId: opportunity.id,
@@ -304,7 +443,10 @@ async function evaluate(
       };
     },
   });
-  if (!optimized || optimized.result.expectedProfitAfterPremium <= 0n) {
+  if (
+    !optimized ||
+    (!signal && optimized.result.expectedProfitAfterPremium <= 0n)
+  ) {
     log.debug("skip: no profitable on-chain quote at tested trade sizes");
     return;
   }
@@ -366,26 +508,64 @@ async function evaluate(
     return;
   }
   const flashLoanPremium = (amountIn * premiumBps) / 10_000n;
-  const minProfit = (amountIn * BigInt(config.minProfitBpsOnChain)) / 10_000n;
-
-  const gasCheck = await checkGasVsProfit(chain.publicClient, {
-    chainId: opportunity.chainId,
-    executorAddress: chain.executorAddress,
-    account: chainClients.account,
-    asset,
-    amount: amountIn,
-    legs,
-    minProfit,
-    assetDecimals,
-    estimatedGrossProfitAsset: expectedProfitAfterPremium,
-    minMultiplier: config.minProfitOverGasMultiplier,
-  });
-  if (!gasCheck.ok) {
-    log.debug(
-      { reason: gasCheck.reason, detail: gasCheck.detail },
-      "skip: gas-vs-profit check failed",
+  let minProfit =
+    (amountIn * BigInt(config.minProfitBpsOnChain)) / 10_000n;
+  let privateGasLimit: bigint | undefined;
+  let gasCheck:
+    | {
+        ok: true;
+        gasCostUsd: number;
+        gasCostWei: bigint;
+        expectedProfitUsd: number;
+        gasEstimate: bigint;
+      }
+    | null = null;
+  if (signal) {
+    // A pre-target eth_estimateGas can legitimately revert: the opportunity
+    // may exist only after the private target. Sign with a conservative cap,
+    // then let the provider's matched post-target simulation validate the
+    // exact bundle. Gas is still priced and protected by on-chain minProfit.
+    privateGasLimit = 350_000n + BigInt(legs.length) * 200_000n;
+    const currentGasPrice = await chain.publicClient.getGasPrice();
+    const gasCostWei =
+      (privateGasLimit * currentGasPrice * 120n) / 100n;
+    const gasCostUsd = await nativeEthAmountToUsd(
+      chain.publicClient,
+      opportunity.chainId,
+      gasCostWei,
     );
-    return;
+    if (gasCostUsd === null) {
+      log.debug("skip private backrun: cannot price conservative gas cap");
+      return;
+    }
+    gasCheck = {
+      ok: true,
+      gasCostUsd,
+      gasCostWei,
+      expectedProfitUsd: 0,
+      gasEstimate: privateGasLimit,
+    };
+  } else {
+    const checked = await checkGasVsProfit(chain.publicClient, {
+      chainId: opportunity.chainId,
+      executorAddress: chain.executorAddress,
+      account: chainClients.account,
+      asset,
+      amount: amountIn,
+      legs,
+      minProfit,
+      assetDecimals,
+      estimatedGrossProfitAsset: expectedProfitAfterPremium,
+      minMultiplier: config.minProfitOverGasMultiplier,
+    });
+    if (!checked.ok) {
+      log.debug(
+        { reason: checked.reason, detail: checked.detail },
+        "skip: gas-vs-profit check failed",
+      );
+      return;
+    }
+    gasCheck = checked;
   }
   const operatorGasBalance = await chain.publicClient.getBalance({
     address: chainClients.account.address,
@@ -413,9 +593,30 @@ async function evaluate(
   }
   const totalGasCostWei = gasCheck.gasCostWei + settlementGasBudgetWei;
   const totalGasCostUsd = gasCheck.gasCostUsd + settlementGasUsd;
-  const expectedNetProfitUsd = gasCheck.expectedProfitUsd - totalGasCostUsd;
   const requiredMinProfitUsd =
     config.minProfitUsdByChain[opportunity.chainId] ?? config.minProfitUsd;
+  if (signal) {
+    const protectedGrossProfitUsd = Math.max(
+      requiredMinProfitUsd + totalGasCostUsd,
+      totalGasCostUsd * config.minProfitOverGasMultiplier,
+    );
+    const protectedProfitAmount = await resolveBorrowAmount(
+      chain.publicClient,
+      opportunity.chainId,
+      asset,
+      assetDecimals,
+      protectedGrossProfitUsd,
+    );
+    if (protectedProfitAmount === null) {
+      log.debug(
+        "skip private backrun: cannot translate gas-protected USD floor into the borrowed asset",
+      );
+      return;
+    }
+    if (protectedProfitAmount > minProfit) minProfit = protectedProfitAmount;
+    gasCheck.expectedProfitUsd = protectedGrossProfitUsd;
+  }
+  const expectedNetProfitUsd = gasCheck.expectedProfitUsd - totalGasCostUsd;
   if (expectedNetProfitUsd < requiredMinProfitUsd) {
     log.debug(
       { expectedNetProfitUsd, minProfitUsd: requiredMinProfitUsd },
@@ -424,8 +625,9 @@ async function evaluate(
     return;
   }
   if (
+    !signal &&
     gasCheck.expectedProfitUsd <
-    totalGasCostUsd * config.minProfitOverGasMultiplier
+      totalGasCostUsd * config.minProfitOverGasMultiplier
   ) {
     log.debug(
       {
@@ -467,13 +669,18 @@ async function evaluate(
 
   let confirmed = false;
   try {
-    const { request } = await chain.publicClient.simulateContract({
-      address: chain.executorAddress,
-      abi: arbExecutorAbi,
-      functionName: "initiateArbitrage",
-      args: [asset, amountIn, legs, minProfit, asset],
-      account: chainClients.account,
-    });
+    if (!signal) {
+      await chain.publicClient.simulateContract({
+        address: chain.executorAddress,
+        abi: arbExecutorAbi,
+        functionName: "initiateArbitrage",
+        args: [asset, amountIn, legs, minProfit, asset],
+        account: chainClients.account,
+        ...(opportunity.chainId === 8453
+          ? { blockTag: "pending" as const }
+          : {}),
+      });
+    }
 
     log.info(
       {
@@ -483,7 +690,9 @@ async function evaluate(
         expectedNetProfitUsd,
         legs: legs.length,
       },
-      "simulation succeeded",
+      signal
+        ? "private backrun prepared for mandatory matched-bundle simulation"
+        : "simulation succeeded",
     );
 
     if (!config.enableLiveExecution) {
@@ -493,12 +702,88 @@ async function evaluate(
       return;
     }
 
-    limiter.record();
-    const hash = await chain.walletClient.writeContract(request);
-    log.info({ hash }, "transaction sent");
+    let hash: `0x${string}`;
+    if (signal?.kind === "mev-share") {
+      const prepared = await chain.walletClient.prepareTransactionRequest({
+        account: chainClients.account,
+        to: chain.executorAddress,
+        gas: privateGasLimit,
+        data: encodeFunctionData({
+          abi: arbExecutorAbi,
+          functionName: "initiateArbitrage",
+          args: [asset, amountIn, legs, minProfit, asset],
+        }),
+      });
+      const signedTransaction = await chain.walletClient.signTransaction(
+        prepared,
+      );
+      const nextBlockNumber =
+        (await chain.publicClient.getBlockNumber({ cacheTime: 0 })) + 1n;
+      const submitted = await simulateAndSendMevShareBackrun({
+        relayUrl: config.mevShareRelayUrl,
+        account: chainClients.account,
+        targetHash: signal.hint.hash,
+        signedTransaction,
+        nextBlockNumber,
+      });
+      hash = keccak256(signedTransaction);
+      limiter.record();
+      log.info(
+        {
+          hash,
+          bundleHash: submitted.bundleHash,
+          targetHash: signal.hint.hash,
+          simulationGasUsed: submitted.simulationGasUsed.toString(),
+        },
+        "target-aware MEV-Share backrun bundle simulated and submitted",
+      );
+    } else if (signal?.kind === "bloxroute-bsc") {
+      if (!config.bloxrouteAuthHeader)
+        throw new Error("bloXroute auth header disappeared at runtime");
+      const prepared = await chain.walletClient.prepareTransactionRequest({
+        account: chainClients.account,
+        to: chain.executorAddress,
+        gas: privateGasLimit,
+        data: encodeFunctionData({
+          abi: arbExecutorAbi,
+          functionName: "initiateArbitrage",
+          args: [asset, amountIn, legs, minProfit, asset],
+        }),
+      });
+      const signedTransaction = await chain.walletClient.signTransaction(
+        prepared,
+      );
+      const submitted = await simulateAndSubmitBloxrouteBackrun({
+        rpcUrl: config.bloxrouteBackrunmeRpcUrl,
+        authorization: config.bloxrouteAuthHeader,
+        signal: signal.signal,
+        signedTransaction,
+      });
+      hash = keccak256(signedTransaction);
+      limiter.record();
+      log.info(
+        {
+          hash,
+          bundleHash: submitted.bundleHash,
+          targetHash: signal.signal.targetHash,
+        },
+        "target-aware bloXroute BSC backrun simulated and submitted",
+      );
+    } else {
+      limiter.record();
+      hash = await chain.walletClient.writeContract({
+        address: chain.executorAddress,
+        abi: arbExecutorAbi,
+        functionName: "initiateArbitrage",
+        args: [asset, amountIn, legs, minProfit, asset],
+        account: chainClients.account,
+      });
+      log.info({ hash }, "transaction sent");
+    }
 
     const receipt = await chain.publicClient.waitForTransactionReceipt({
       hash,
+      ...(signal ? { timeout: signal.kind === "mev-share" ? 45_000 : 15_000 } : {}),
     });
     confirmed = receipt.status === "success";
     log.info(

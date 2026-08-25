@@ -82,11 +82,19 @@ export function buildChainClients(config: Config) {
     // prevent fallback altogether. Use the independently verified public RPC
     // first and keep the configured endpoint as the secondary transport. Do
     // not rank/ping the exhausted endpoint on every cycle.
-    const readUrls = [
-      chainConfig.fallbackRpcUrl,
-      ...chain.rpcUrls.default.http,
-      chainConfig.rpcUrl,
-    ].filter((url, index, urls) => urls.indexOf(url) === index);
+    const readUrls = (
+      chainId === 8453
+        ? [
+            chainConfig.rpcUrl,
+            chainConfig.fallbackRpcUrl,
+            ...chain.rpcUrls.default.http,
+          ]
+        : [
+            chainConfig.fallbackRpcUrl,
+            ...chain.rpcUrls.default.http,
+            chainConfig.rpcUrl,
+          ]
+    ).filter((url, index, urls) => urls.indexOf(url) === index);
     const readTransport = fallback(readUrls.map((url) => http(url)));
 
     // Block/mempool subscriptions stay on the primary's own WebSocket only —
@@ -118,13 +126,21 @@ export function buildChainClients(config: Config) {
     // provider fallback as reads — no reason a send should have less
     // reliability than a read.
     const writeTransport =
-      chainId === 1 && config.flashbotsProtectRpcUrl
+      chainId === 8453
+        ? http(chainConfig.rpcUrl)
+        : chainId === 1 && config.flashbotsProtectRpcUrl
         ? http(config.flashbotsProtectRpcUrl)
         : readTransport;
     if (chainId === 1 && config.flashbotsProtectRpcUrl) {
       logger.info(
         { chainId },
         "routing Ethereum transactions through Flashbots Protect (private, not the public mempool)",
+      );
+    }
+    if (chainId === 8453) {
+      logger.info(
+        { chainId, rpcUrl: chainConfig.rpcUrl },
+        "routing Base reads, pending simulation and sends through Flashblocks",
       );
     }
 

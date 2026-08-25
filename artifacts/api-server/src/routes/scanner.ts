@@ -1025,6 +1025,22 @@ const CHAIN_CLIENTS: Record<ChainId, any> = {
   }),
 };
 
+// Base Flashblocks exposes the sequencer's pre-confirmed `pending` state.
+// Keep discovery on the regular, redundant RPC set, but run the final exact
+// quote on this dedicated endpoint so the profitability decision sees state
+// updates roughly every 200 ms instead of waiting for the sealed L2 block.
+const BASE_FLASHBLOCKS_CLIENT = createPublicClient({
+  chain: base,
+  transport: http(
+    process.env["BASE_FLASHBLOCKS_RPC_URL"] ??
+      "https://mainnet-preconf.base.org",
+  ),
+});
+
+function exactQuoteClient(chain: ChainId) {
+  return chain === "base" ? BASE_FLASHBLOCKS_CLIENT : CHAIN_CLIENTS[chain];
+}
+
 const QUOTE_DECIMALS: Record<string, number> = {
   "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": 6,
   "0xdac17f958d2ee523a2206206994597c13d831ec7": 6,
@@ -3798,11 +3814,19 @@ async function scan(chain: "all" | ChainId) {
                 // the discovery block can become an archive request while a
                 // large graph is being ranked. Every leg in this candidate
                 // still reads the same block, preserving quote consistency.
-                const quoteBlockNumber = await CHAIN_CLIENTS[item]
-                  .getBlockNumber({ cacheTime: 0 })
+                const quoteClient = exactQuoteClient(item);
+                const quoteBlockNumber = await quoteClient
+                  .getBlock({
+                    ...(item === "base"
+                      ? { blockTag: "pending" as const }
+                      : { blockTag: "latest" as const }),
+                  })
+                  .then((block: { number: bigint | null }) =>
+                    block.number ?? BigInt(opportunity.blockNumber),
+                  )
                   .catch(() => BigInt(opportunity.blockNumber));
                 const quote = borrowTokenPriceUsd
-                  ? await withinExactQuoteBudget(quoteAtomicCycle(CHAIN_CLIENTS[item], {
+                  ? await withinExactQuoteBudget(quoteAtomicCycle(quoteClient, {
                       chainId: opportunity.chainId,
                       borrowDecimals:
                         opportunity.routeLegs[0]!.tokenInDecimals,
@@ -3815,7 +3839,9 @@ async function scan(chain: "all" | ChainId) {
                       maxBorrowUsd: opportunity.profit.recommendedBorrowUsd,
                       minBorrowUsd: minimumBorrow,
                       slippageBps: 20,
-                      blockNumber: quoteBlockNumber,
+                      ...(item === "base"
+                        ? { blockTag: "pending" as const }
+                        : { blockNumber: quoteBlockNumber }),
                       onFailure: (diagnostic) => {
                         quoteFailure = diagnostic;
                         quoteFailureBackoff.set(opportunity.id, {
@@ -3928,11 +3954,19 @@ async function scan(chain: "all" | ChainId) {
                 item,
                 buyQuoteAddress,
               );
-              const quoteBlockNumber = await CHAIN_CLIENTS[item]
-                .getBlockNumber({ cacheTime: 0 })
+              const quoteClient = exactQuoteClient(item);
+              const quoteBlockNumber = await quoteClient
+                .getBlock({
+                  ...(item === "base"
+                    ? { blockTag: "pending" as const }
+                    : { blockTag: "latest" as const }),
+                })
+                .then((block: { number: bigint | null }) =>
+                  block.number ?? BigInt(opportunity.blockNumber),
+                )
                 .catch(() => BigInt(opportunity.blockNumber));
               const quote = borrowTokenPriceUsd
-                ? await withinExactQuoteBudget(quoteClosedRoute(CHAIN_CLIENTS[item], {
+                ? await withinExactQuoteBudget(quoteClosedRoute(quoteClient, {
                     chainId: opportunity.chainId,
                     tokenAddress: opportunity.tokenAddress,
                     tokenDecimals: opportunity.tokenDecimals,
@@ -3946,7 +3980,9 @@ async function scan(chain: "all" | ChainId) {
                     minBorrowUsd: minimumBorrow,
                     slippageBps: 20,
                     borrowTokenPriceUsd,
-                    blockNumber: quoteBlockNumber,
+                    ...(item === "base"
+                      ? { blockTag: "pending" as const }
+                      : { blockNumber: quoteBlockNumber }),
                     onFailure: (diagnostic) => {
                       quoteFailure = diagnostic;
                       quoteFailureBackoff.set(opportunity.id, {
