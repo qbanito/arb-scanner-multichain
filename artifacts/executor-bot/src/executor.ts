@@ -111,20 +111,36 @@ export async function runLoop(
   // Block-driven: WebSocket chains subscribe directly. HTTP-only chains use
   // viem's block-number watcher, which polls only the lightweight head RPC;
   // the fixed interval below remains a heartbeat if either watcher fails.
+  const httpWatcherStarted = new Set<number>();
+  const startHttpWatcher = (
+    chainId: number,
+    entry: ChainClients["clients"] extends Map<number, infer Entry>
+      ? Entry
+      : never,
+  ) => {
+    if (httpWatcherStarted.has(chainId)) return;
+    httpWatcherStarted.add(chainId);
+    entry.publicClient.watchBlockNumber({
+      pollingInterval: Math.max(1_000, config.minTickGapMs),
+      onBlockNumber: () => runTickSafely(chainId, `block:${chainId}:http`),
+      onError: (err) =>
+        logger.warn({ err, chainId }, "block polling watcher error"),
+    });
+  };
   for (const [chainId, entry] of chainClients.clients) {
     if (entry.wsClient) {
       entry.wsClient.watchBlocks({
         onBlock: () => runTickSafely(chainId, `block:${chainId}:ws`),
-        onError: (err) =>
-          logger.warn({ err, chainId }, "block subscription error"),
+        onError: (err) => {
+          logger.warn(
+            { err, chainId },
+            "block subscription error; enabling HTTP block watcher fallback",
+          );
+          startHttpWatcher(chainId, entry);
+        },
       });
     } else {
-      entry.publicClient.watchBlockNumber({
-        pollingInterval: Math.max(1_000, config.minTickGapMs),
-        onBlockNumber: () => runTickSafely(chainId, `block:${chainId}:http`),
-        onError: (err) =>
-          logger.warn({ err, chainId }, "block polling watcher error"),
-      });
+      startHttpWatcher(chainId, entry);
     }
   }
 
